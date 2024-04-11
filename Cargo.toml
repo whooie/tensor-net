@@ -1,0 +1,31 @@
+# [[bin]]
+# path = "src/main.rs"
+# name = "main"
+
+[package]
+name = "tensor_networks"
+version = "0.1.0"
+authors = [ "whooie <wcwhuie@gmail.com>",]
+edition = "2021"
+
+[dependencies]
+# indexmap = "*"
+itertools = "0.12.1"
+num-complex = "0.4.5"
+ndarray = "0.15.6"
+# ndarray-npy = "*"
+rustc-hash = "1.1.0"
+thiserror = "1.0.58"
+# anyhow = "*"
+
+[lib]
+path = "lib/lib.rs"
+name = "tensor_net"
+
+# [dependencies.ndarray-linalg]
+# version = "*"
+# features = [ "openblas-system",]
+
+[profile.release]
+lto = true
+panic = "abort"
