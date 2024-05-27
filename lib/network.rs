@@ -1,6 +1,7 @@
 use std::{
     hash::Hash,
-    ops::{ Deref, DerefMut },
+    iter::Sum,
+    ops::{ Deref, DerefMut, Mul },
 };
 use rustc_hash::{ FxHashMap as HashMap };
 use thiserror::Error;
@@ -13,8 +14,17 @@ pub enum NetworkError {
     /// paired with another tensor in the network.
     #[error("error in Network::add_tensor: pre-existing index {0}")]
     PreExistingIndex(String),
+
+    /// Returned by anything involving an operation on the level of individual
+    /// tensors.
+    #[error("tensor error: {0}")]
+    TensorError(#[from] tensor::TensorError),
 }
 pub type NetworkResult<T> = Result<T, NetworkError>;
+
+fn fst<T, U>(pair: (T, U)) -> T { pair.0 }
+
+fn snd<T, U>(pair: (T, U)) -> U { pair.1 }
 
 macro_rules! isomorphism {
     (
@@ -124,6 +134,25 @@ where T: Idx + Hash
         }
     }
 
+    /// Create a new network from an iterator by repeatedly
+    /// [pushing][Self::push] new tensors onto an initially empty network.
+    ///
+    /// Note that [node IDs][Id] count from zero and no nodes will be removed
+    /// during this process, so the IDs 0, ..., n - 1 will correspond uniquely
+    /// to the first n nodes in the iterator, in order.
+    ///
+    /// Fails if the iteration sees a tensor containing an index that exists in
+    /// a pair between two tensors already in the network.
+    pub fn from_nodes<I>(nodes: I) -> NetworkResult<Self>
+    where I: IntoIterator<Item = Tensor<T, A>>
+    {
+        let mut new = Self::new();
+        for node in nodes.into_iter() {
+            new.push(node)?;
+        }
+        Ok(new)
+    }
+
     /// Return the number of tensors in the network.
     pub fn count_nodes(&self) -> usize { self.nodes.len() }
 
@@ -218,6 +247,9 @@ where T: Idx + Hash
     }
 
     /// Add a new tensor to the network and return its ID.
+    ///
+    /// Fails if any of the new tensor's indices exist in the network as a bond
+    /// between two of its tensors.
     pub fn push(&mut self, tensor: Tensor<T, A>) -> NetworkResult<Id> {
         let id: Id = self.node_id.into();
         let mut neighbors: HashMap<Id, usize> = HashMap::default();
@@ -284,6 +316,80 @@ where T: Idx + Hash
             None
         }
     }
+}
+
+impl<T, A> Network<T, A>
+where
+    T: Idx + Hash,
+    A: Clone + Mul<A, Output = A> + Sum,
+{
+    /// Simple greedy algorithm to find the next contraction step, optimized
+    /// over only a single contraction.
+    fn find_contraction(&self) -> Option<(Id, Id)> {
+        fn costf<T, A>(net: &Network<T, A>, id_a: &Id, id_b: &Id) -> usize
+        where T: Idx + Hash
+        {
+            let a = net.get(id_a).unwrap();
+            let b = net.get(id_b).unwrap();
+            a.indices()
+                .map(|idx| idx.dim())
+                .chain(
+                    b.indices()
+                        .filter(|idx| !a.has_index(idx))
+                        .map(|idx| idx.dim())
+                )
+                .product()
+        }
+
+        self.internal_indices()
+            .min_by(|(_, (id_al, id_bl)), (_, (id_ar, id_br))| {
+                costf(self, id_al, id_bl)
+                    .cmp(&costf(self, id_ar, id_br))
+            })
+            .map(snd)
+    }
+
+    /// Contract a single pair of tensors named by the index pair `(a, b)`.
+    fn do_contract(&mut self, a: Id, b: Id) -> NetworkResult<Id> {
+        let (t_a, _) = self.remove(a).unwrap();
+        let (t_b, _) = self.remove(b).unwrap();
+        let t_c = t_a.contract(t_b)?;
+        self.push(t_c)
+    }
+
+    /// Contract the entire network into a single output tensor.
+    pub fn contract(mut self) -> NetworkResult<Tensor<T, A>> {
+        while let Some((a, b)) = self.find_contraction() {
+            self.do_contract(a, b)?;
+        }
+        if self.count_nodes() > 1 {
+            let mut remaining_nodes = self.into_iter();
+            let acc = remaining_nodes.next().unwrap();
+            remaining_nodes.try_fold(acc, |a, t| a.tensor_prod(t))
+                .map_err(NetworkError::from)
+        } else {
+            Ok(self.into_iter().next().unwrap())
+        }
+    }
+}
+
+impl<T, A> IntoIterator for Network<T, A> {
+    type Item = Tensor<T, A>;
+    type IntoIter = IntoNodes<T, A>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoNodes { iter: self.nodes.into_values() }
+    }
+}
+
+pub struct IntoNodes<T, A> {
+    iter: std::collections::hash_map::IntoValues<Id, Tensor<T, A>>
+}
+
+impl<T, A> Iterator for IntoNodes<T, A> {
+    type Item = Tensor<T, A>;
+
+    fn next(&mut self) -> Option<Self::Item> { self.iter.next() }
 }
 
 pub struct Nodes<'a, T, A> {
