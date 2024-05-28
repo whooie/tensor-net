@@ -1,15 +1,49 @@
+//! An N-dimensional array of data with shape determined by a set of numerical
+//! indices.
+//!
+//! A [`Tensor`] is multi-linear algebraic object that can be seen as the
+//! generalization of linear or bi-linear objects such as vectors and matrices.
+//! Like vectors and matrices, tensors represent collections of objects that are
+//! accessed by supplying a number of index values (i.e. 1 for a vector, 2 for a
+//! matrix), but allow for more than 2.
+//!
+//! *T*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub></sub>
+//!
+//! Linear operations are generalized as well. The usual matrix-matrix,
+//! matrix-vector, vector-matrix, and vector-vector "dot" products are
+//! generalized to the tensor contraction over a subset of two tensors' indices,
+//! where the result is calculated by summing over the values of those indices
+//! and leaving all others untouched.
+//!
+//! *C*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
+//!   = Σ<sub>{*α*<sub>1</sub>,...,*α*<sub>*D*</sub>}</sub>
+//!     *A*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*α*<sub>1</sub>,...,*α*<sub>*D*</sub></sub>
+//!     × *B*<sub>*b*<sub>1</sub>,...,*b*<sub>*M*</sub>,*α*<sub>1</sub>,...,*α*<sub>*D*</sub></sub>
+//!
+//! Likewise, the Kronecker product is generalized to the tensor product.
+//!
+//! *C*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
+//!   = *A*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub></sub>
+//!   × *B*<sub>*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
+
 use std::{
     fmt,
+    hash::Hash,
     iter::Sum,
     ops::{ Deref, Add, Sub, Mul, Range },
 };
 use itertools::Itertools;
 use ndarray::{ self as nd, Dimension };
 use num_complex::Complex64 as C64;
+use rustc_hash::FxHashSet as HashSet;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TensorError {
+    /// Returned when attempting to create a new tensor with duplicate indices.
+    #[error("error in tensor creation: duplicate indices")]
+    DuplicateIndices,
+
     /// Returned when attempting to create a new tensor from a pre-existing
     /// array and the provided indices have non-matching total dimension.
     #[error("error in tensor creation: non-matching indices and array shape")]
@@ -35,6 +69,7 @@ pub enum TensorError {
     #[error("error in tensor sub: non-matching indices")]
     IncompatibleIndicesSub,
 }
+use TensorError::*;
 pub type TensorResult<T> = Result<T, TensorError>;
 
 /// Describes a tensor index.
@@ -45,7 +80,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// available indices are encoded in the structure of the type implementing this
 /// trait:
 /// ```ignore
-/// #[derive(Clone, Debug, PartialEq, Eq)]
+/// #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// enum Index { A, B, C, /* ... */ }
 ///
 /// impl Idx for Index {
@@ -70,7 +105,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// indices and their dimensions are left to be encoded as arbitrary fields of
 /// the type:
 /// ```ignore
-/// #[derive(Clone, Debug, PartialEq, Eq)]
+/// #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 /// struct Index(String, usize);
 ///
 /// impl Idx for Index {
@@ -84,7 +119,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// representations because there are runtime-mutable degrees of freedom.
 ///
 /// Ultimately, static representations should be preferred where possible.
-pub trait Idx: Clone + Eq {
+pub trait Idx: Clone + Eq + Hash {
     /// Return the number of values the index can take.
     fn dim(&self) -> usize;
 
@@ -102,7 +137,7 @@ pub trait Idx: Clone + Eq {
 /// This type should be used only when a tensor network needs to be dynamically
 /// modifiable, otherwise static implementations of tensor indices should be
 /// preferred (see [`Idx`]).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DynIdx(
     /// Identifier label.
     pub String,
@@ -116,13 +151,19 @@ impl Idx for DynIdx {
     fn label(&self) -> String { self.0.clone() }
 }
 
+impl<T> From<(T, usize)> for DynIdx
+where T: ToString
+{
+    fn from(x: (T, usize)) -> Self {
+        let (label, dim) = x;
+        Self(label.to_string(), dim)
+    }
+}
+
 /// Basic implementation of an abstract tensor quantity.
 ///
 /// A `Tensor<T, A>` consists of some number of quantities of type `A` and a
-/// series of indices belonging to a type `T` that implements [`Idx`]. The
-/// individual elements of a tensor can be accessed directly, but since this
-/// library optimizes for use in full tensor networks, this operation is
-/// inefficient and discouraged.
+/// series of indices belonging to a type `T` that implements [`Idx`].
 ///
 /// This implementation distinguishes between rank 0 (scalar) and rank > 0
 /// (array) quantities for some small operational benefits, but otherwise lives
@@ -245,7 +286,32 @@ impl<'a, T> Iterator for Indices<'a, T> {
 impl<T, A> TensorData<T, A>
 where T: Idx
 {
-    fn new<I, F>(indices: I, mut elems: F) -> Self
+    fn new<I, F>(indices: I, mut elems: F) -> TensorResult<Self>
+    where
+        I: IntoIterator<Item = T>,
+        F: FnMut(&[usize]) -> A,
+    {
+        let indices: Vec<T> = indices.into_iter().collect();
+        let unique_check: HashSet<&T> = indices.iter().collect();
+        if unique_check.len() != indices.len() {
+            return Err(DuplicateIndices);
+        }
+        if indices.is_empty() {
+            let scalar: A = elems(&[]);
+            Ok(Self::Scalar(scalar))
+        } else {
+            let shape: Vec<usize>
+                = indices.iter().map(|idx| idx.dim()).collect();
+            let data: nd::ArrayD<A>
+                = nd::ArrayD::from_shape_fn(
+                    shape,
+                    |idxs| elems(idxs.as_array_view().as_slice().unwrap()))
+                ;
+            Ok(Self::Tensor(indices, data))
+        }
+    }
+
+    fn new_unchecked<I, F>(indices: I, mut elems: F) -> Self
     where
         I: IntoIterator<Item = T>,
         F: FnMut(&[usize]) -> A,
@@ -275,11 +341,15 @@ where T: Idx
         D: nd::Dimension,
     {
         let indices: Vec<T> = indices.into_iter().collect();
+        let unique_check: HashSet<&T> = indices.iter().collect();
+        if unique_check.len() != indices.len() {
+            return Err(DuplicateIndices);
+        }
         let shape = array.shape();
         if indices.len() != shape.len()
             || indices.iter().zip(shape).any(|(idx, dim)| idx.dim() != *dim)
         {
-            return Err(TensorError::IncompatibleShape);
+            return Err(IncompatibleShape);
         }
         Ok(Self::Tensor(indices, array.into_dyn()))
     }
@@ -472,7 +542,7 @@ where T: Idx
                     .cloned()
                     .collect();
                 (!idx_common.is_empty()).then_some(())
-                    .ok_or(TensorError::NoMatchingIndices)?;
+                    .ok_or(NoMatchingIndices)?;
                 Ok(Self::do_contract(idx_common, idxs_a, a, idxs_b, b))
             },
         }
@@ -490,7 +560,7 @@ where T: Idx
     {
         let n_idxs_a = idxs_a.len();
         idxs_a.append(&mut idxs_b);
-        TensorData::<T, C>::new(
+        TensorData::<T, C>::new_unchecked(
             idxs_a,
             |k_all| {
                 a[&k_all[..n_idxs_a]].clone() * b[&k_all[n_idxs_a..]].clone()
@@ -525,7 +595,7 @@ where T: Idx
                     .collect();
                 idx_common.is_empty()
                     .then_some(())
-                    .ok_or(TensorError::MatchingIndices)?;
+                    .ok_or(MatchingIndices)?;
                 Ok(Self::do_tensor_prod(idxs_a, a, idxs_b, b))
             },
         }
@@ -573,10 +643,10 @@ where T: Idx
                 Ok(TensorData::Scalar(a + b))
             },
             (TensorData::Scalar(_), TensorData::Tensor(..)) => {
-                Err(TensorError::IncompatibleIndicesAdd)
+                Err(IncompatibleIndicesAdd)
             },
             (TensorData::Tensor(..), TensorData::Scalar(_)) => {
-                Err(TensorError::IncompatibleIndicesAdd)
+                Err(IncompatibleIndicesAdd)
             },
             (
                 TensorData::Tensor(idxs_a, a),
@@ -586,7 +656,7 @@ where T: Idx
                     || idxs_a.iter().any(|idx| !idxs_b.contains(idx))
                     || idxs_b.iter().any(|idx| !idxs_a.contains(idx))
                 {
-                    return Err(TensorError::IncompatibleIndicesAdd);
+                    return Err(IncompatibleIndicesAdd);
                 }
                 let mut k_b: usize;
                 for (k_a, idx_a) in idxs_a.iter().enumerate() {
@@ -627,10 +697,10 @@ where T: Idx
                 Ok(TensorData::Scalar(a - b))
             },
             (TensorData::Scalar(_), TensorData::Tensor(..)) => {
-                Err(TensorError::IncompatibleIndicesSub)
+                Err(IncompatibleIndicesSub)
             },
             (TensorData::Tensor(..), TensorData::Scalar(_)) => {
-                Err(TensorError::IncompatibleIndicesSub)
+                Err(IncompatibleIndicesSub)
             },
             (
                 TensorData::Tensor(idxs_a, a),
@@ -640,7 +710,7 @@ where T: Idx
                     || idxs_a.iter().any(|idx| !idxs_b.contains(idx))
                     || idxs_b.iter().any(|idx| !idxs_a.contains(idx))
                 {
-                    return Err(TensorError::IncompatibleIndicesSub);
+                    return Err(IncompatibleIndicesSub);
                 }
                 let mut k_b: usize;
                 for (k_a, idx_a) in idxs_a.iter().enumerate() {
@@ -760,12 +830,12 @@ impl<T, A> Tensor<T, A>
 where T: Idx
 {
     /// Create a new tensor using a function over given indices.
-    pub fn new<I, F>(indices: I, elems: F) -> Self
+    pub fn new<I, F>(indices: I, elems: F) -> TensorResult<Self>
     where
         I: IntoIterator<Item = T>,
         F: FnMut(&[usize]) -> A,
     {
-        TensorData::new(indices, elems).into()
+        TensorData::new(indices, elems).map(Self::from)
     }
 
     /// Create a new rank-0 (scalar) tensor.

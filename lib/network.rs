@@ -1,3 +1,12 @@
+//! A collection of tensors arranged in a graph, where nodes are tensors and
+//! edges are determined by common indices.
+//!
+//! [`Network`]s track which indices belong to which tensors and additionally
+//! whether a particular index is shared between two tensors. Network edges are
+//! identified by common indices, so each particular index can only exist as
+//! either an unbonded degree of freedom or a bond between exactly two tensors
+//! in the network.
+
 use std::{
     hash::Hash,
     iter::Sum,
@@ -15,11 +24,21 @@ pub enum NetworkError {
     #[error("error in Network::add_tensor: pre-existing index {0}")]
     PreExistingIndex(String),
 
+    /// Returned when attempting to contract on an unpaired index.
+    #[error("error in Network::do_contract_index: index {0} is unpaired")]
+    ContractUnpaired(String),
+
+    /// Returned when attempting to contract on an index that does not exist in
+    /// a network.
+    #[error("error in Network::do_contract_index: missing index {0}")]
+    ContractMissing(String),
+
     /// Returned by anything involving an operation on the level of individual
     /// tensors.
     #[error("tensor error: {0}")]
     TensorError(#[from] tensor::TensorError),
 }
+use NetworkError::*;
 pub type NetworkResult<T> = Result<T, NetworkError>;
 
 fn fst<T, U>(pair: (T, U)) -> T { pair.0 }
@@ -107,12 +126,20 @@ copy_isomorphism!(
     from: { u8, u16 },
 );
 
+/// An edge in a [`Network`].
+///
+/// A wire is either an unbonded degree of freedom belonging to a single tensor
+/// or a bond between exactly two tensors in the network.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Wire {
     Unpaired(Id),
     Paired(Id, Id),
 }
 
+/// A graph of [`Tensor`]s.
+///
+/// Every tensor in the network must have the same data type `A` and index type
+/// `T`. See [`Idx`] for info on dynamic versus static networks.
 #[derive(Clone, Debug, Default)]
 pub struct Network<T, A> {
     nodes: HashMap<Id, Tensor<T, A>>,
@@ -256,7 +283,7 @@ where T: Idx + Hash
         for idx in tensor.indices() {
             match self.indices.get_mut(idx) {
                 Some(Wire::Paired(..)) => {
-                    return Err(NetworkError::PreExistingIndex(idx.label()));
+                    return Err(PreExistingIndex(idx.label()));
                 },
                 Some(status) => {
                     let Wire::Unpaired(neighbor)
@@ -350,11 +377,25 @@ where
     }
 
     /// Contract a single pair of tensors named by the index pair `(a, b)`.
-    fn do_contract(&mut self, a: Id, b: Id) -> NetworkResult<Id> {
-        let (t_a, _) = self.remove(a).unwrap();
-        let (t_b, _) = self.remove(b).unwrap();
+    pub fn do_contract<I, J>(&mut self, a: I, b: J) -> NetworkResult<Id>
+    where
+        I: Into<Id>,
+        J: Into<Id>,
+    {
+        let (t_a, _) = self.remove(a.into()).unwrap();
+        let (t_b, _) = self.remove(b.into()).unwrap();
         let t_c = t_a.contract(t_b)?;
         self.push(t_c)
+    }
+
+    /// Like [`Self::do_contract`], but with the contraction named by the index
+    /// instead of the tensors.
+    pub fn do_contract_index(&mut self, idx: &T) -> NetworkResult<Id> {
+        match self.indices.get(idx) {
+            Some(Wire::Paired(a, b)) => self.do_contract(*a, *b),
+            Some(Wire::Unpaired(_)) => Err(ContractUnpaired(idx.label())),
+            None => Err(ContractMissing(idx.label())),
+        }
     }
 
     /// Contract the entire network into a single output tensor.
@@ -371,6 +412,17 @@ where
             Ok(self.into_iter().next().unwrap())
         }
     }
+
+    /// Contract all paired indices, leaving the result as a network.
+    ///
+    /// The network may be left with multiple tensors remaining if they have no
+    /// common indices.
+    pub fn contract_network(&mut self) -> NetworkResult<&mut Self> {
+        while let Some((a, b)) = self.find_contraction() {
+            self.do_contract(a, b)?;
+        }
+        Ok(self)
+    }
 }
 
 impl<T, A> IntoIterator for Network<T, A> {
@@ -382,6 +434,9 @@ impl<T, A> IntoIterator for Network<T, A> {
     }
 }
 
+/// Iterator over network nodes, created by [`Network::into_iter`].
+///
+/// The iterator item type is [`Tensor<T, A>`].
 pub struct IntoNodes<T, A> {
     iter: std::collections::hash_map::IntoValues<Id, Tensor<T, A>>
 }
@@ -392,6 +447,9 @@ impl<T, A> Iterator for IntoNodes<T, A> {
     fn next(&mut self) -> Option<Self::Item> { self.iter.next() }
 }
 
+/// Iterator over network nodes, created by [`Network::nodes`].
+///
+/// The iterator item type is `(`[`Id`]`, &'a `[`Tensor<T, A>`]`)`.
 pub struct Nodes<'a, T, A> {
     iter: std::collections::hash_map::Iter<'a, Id, Tensor<T, A>>
 }
@@ -404,6 +462,9 @@ impl<'a, T, A> Iterator for Nodes<'a, T, A> {
     }
 }
 
+/// Iterator over indices in a network, created by [`Network::indices`].
+///
+/// The iterator item type is `(&'a T, `[`Wire`]`)`.
 pub struct Indices<'a, T> {
     iter: std::collections::hash_map::Iter<'a, T, Wire>
 }
@@ -416,6 +477,10 @@ impl<'a, T> Iterator for Indices<'a, T> {
     }
 }
 
+/// Iterator over only the indices in a network that pair two tensors, created
+/// by [`Network::internal_indices`].
+///
+/// The iterator item type is `(&'a T, (`[`Id`]`, `[`Id`]`))`.
 pub struct InternalIndices<'a, T> {
     iter: Indices<'a, T>
 }
@@ -434,6 +499,10 @@ impl<'a, T> Iterator for InternalIndices<'a, T> {
     }
 }
 
+/// Iterator over only the indices between two tensors in a network, created by
+/// [`Network::indices_between`].
+///
+/// The iterator item type is `&'a T`.
 pub struct IndicesBetween<'a, T> {
     a: Id,
     b: Id,
@@ -456,6 +525,10 @@ impl<'a, T> Iterator for IndicesBetween<'a, T> {
     }
 }
 
+/// Iterator over only the tensors in a network that share an index with a given
+/// tensor, created by [`Network::neighbors_of`].
+///
+/// The iterator item type is `(`[`Id`]`, &'a `[`Tensor<T, A>`]`)`.
 pub struct Neighbors<'a, T, A> {
     network: &'a Network<T, A>,
     iter: std::collections::hash_map::Keys<'a, Id, usize>,
