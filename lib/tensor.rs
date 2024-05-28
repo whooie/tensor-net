@@ -311,7 +311,7 @@ where T: Idx
         }
     }
 
-    fn new_unchecked<I, F>(indices: I, mut elems: F) -> Self
+    unsafe fn new_unchecked<I, F>(indices: I, mut elems: F) -> Self
     where
         I: IntoIterator<Item = T>,
         F: FnMut(&[usize]) -> A,
@@ -352,6 +352,16 @@ where T: Idx
             return Err(IncompatibleShape);
         }
         Ok(Self::Tensor(indices, array.into_dyn()))
+    }
+
+    unsafe fn from_array_unchecked<I, D>(indices: I, array: nd::Array<A, D>)
+        -> Self
+    where
+        I: IntoIterator<Item = T>,
+        D: nd::Dimension,
+    {
+        let indices: Vec<T> = indices.into_iter().collect();
+        Self::Tensor(indices, array.into_dyn())
     }
 
     fn is_scalar(&self) -> bool { matches!(self, Self::Scalar(_)) }
@@ -560,12 +570,15 @@ where T: Idx
     {
         let n_idxs_a = idxs_a.len();
         idxs_a.append(&mut idxs_b);
-        TensorData::<T, C>::new_unchecked(
-            idxs_a,
-            |k_all| {
-                a[&k_all[..n_idxs_a]].clone() * b[&k_all[n_idxs_a..]].clone()
-            }
-        )
+        unsafe {
+            TensorData::<T, C>::new_unchecked(
+                idxs_a,
+                |k_all| {
+                    a[&k_all[..n_idxs_a]].clone()
+                        * b[&k_all[n_idxs_a..]].clone()
+                }
+            )
+        }
     }
 
     fn tensor_prod<B, C>(self, other: TensorData<T, B>)
@@ -838,12 +851,27 @@ where T: Idx
         TensorData::new(indices, elems).map(Self::from)
     }
 
+    /// Create a new tensor using a function over given indices.
+    ///
+    /// # Safety
+    /// This function does not check for duplicate indices, which will cause
+    /// unrecoverable errors in contraction and book-keeping within tensor
+    /// networks. A call to this function is safe iff all indices are unique.
+    pub unsafe fn new_unchecked<I, F>(indices: I, elems: F) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        F: FnMut(&[usize]) -> A,
+    {
+        TensorData::new_unchecked(indices, elems).into()
+    }
+
     /// Create a new rank-0 (scalar) tensor.
     pub fn new_scalar(val: A) -> Self { TensorData::new_scalar(val).into() }
 
     /// Create a new tensor from an n-dimensional array.
     ///
-    /// Fails if the dimensions of the array do not match the indices provided.
+    /// Fails if duplicate indices are provided or the dimensions of the array
+    /// do not match those of the indices.
     pub fn from_array<I, D>(indices: I, array: nd::Array<A, D>)
         -> TensorResult<Self>
     where
@@ -851,6 +879,24 @@ where T: Idx
         D: nd::Dimension,
     {
         TensorData::from_array(indices, array).map(Self::from)
+    }
+
+    /// Create a new tensor from an n-dimensional array.
+    ///
+    /// # Safety
+    /// This function does not check for duplicate indices or that the
+    /// dimensions of the array match those of the indices. Failure to meet
+    /// these conditions will cause unrecoverable errors in all arithmetic
+    /// operations and book-keeping within tensor networks. A call to this
+    /// function is safe iff all indices are unique and each is aligned to an
+    /// axis of size equal to its dimension in the data array.
+    pub unsafe fn from_array_unchecked<I, D>(indices: I, array: nd::Array<A, D>)
+        -> Self
+    where
+        I: IntoIterator<Item = T>,
+        D: nd::Dimension,
+    {
+        TensorData::from_array_unchecked(indices, array).into()
     }
 
     /// Return `true` if `self` has rank 0.

@@ -115,7 +115,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tensor_networks"
+name = "tensor-net"
 version = "0.1.0"
 dependencies = [
  "itertools",
