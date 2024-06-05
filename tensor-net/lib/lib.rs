@@ -2,4 +2,5 @@
 
 pub mod tensor;
 pub mod network;
+pub mod pool;
 

@@ -283,6 +283,27 @@ impl<'a, T> Iterator for Indices<'a, T> {
     }
 }
 
+/// Iterator type over mutable references to the indices of a given [`Tensor`].
+///
+/// The iterator item type is `&mut T`.
+pub struct IndicesMut<'a, T>(IndicesMutData<'a, T>);
+
+enum IndicesMutData<'a, T> {
+    Scalar,
+    Tensor(std::slice::IterMut<'a, T>),
+}
+
+impl<'a, T> Iterator for IndicesMut<'a, T> {
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.0 {
+            IndicesMutData::Scalar => None,
+            IndicesMutData::Tensor(iter) => iter.next(),
+        }
+    }
+}
+
 impl<T, A> TensorData<T, A>
 where T: Idx
 {
@@ -373,6 +394,24 @@ where T: Idx
         }
     }
 
+    fn index_pos(&self, index: &T) -> Option<usize> {
+        match self {
+            Self::Scalar(_) => None,
+            Self::Tensor(idxs, _) => {
+                idxs.iter()
+                    .enumerate()
+                    .find_map(|(k, idx)| (idx == index).then_some(k))
+            },
+        }
+    }
+
+    unsafe fn get_index_mut(&mut self, index: &T) -> Option<&mut T> {
+        match self {
+            Self::Scalar(_) => None,
+            Self::Tensor(idxs, _) => idxs.iter_mut().find(|idx| idx == &index),
+        }
+    }
+
     fn rank(&self) -> usize {
         match self {
             Self::Scalar(_) => 0,
@@ -396,6 +435,45 @@ where T: Idx
         }
     }
 
+    unsafe fn indices_mut(&mut self) -> IndicesMut<'_, T> {
+        match self {
+            Self::Scalar(_) => IndicesMut(IndicesMutData::Scalar),
+            Self::Tensor(idxs, _)
+                => IndicesMut(IndicesMutData::Tensor(idxs.iter_mut())),
+        }
+    }
+
+    fn map<F, B>(&self, mut f: F) -> TensorData<T, B>
+    where F: FnMut(&[usize], &A) -> B
+    {
+        match self {
+            Self::Scalar(a) => TensorData::Scalar(f(&[], a)),
+            Self::Tensor(idxs, data) => TensorData::Tensor(
+                idxs.clone(),
+                data.indexed_iter()
+                    .map(|(ix, a)| f(ix.as_array_view().as_slice().unwrap(), a))
+                    .collect::<nd::Array1<B>>()
+                    .into_dyn()
+                    .into_shape(data.raw_dim())
+                    .unwrap()
+            )
+        }
+    }
+
+    fn map_inplace<F>(&mut self, mut f: F)
+    where F: FnMut(&[usize], &A) -> A
+    {
+        match self {
+            Self::Scalar(a) => { *a = f(&[], &*a); },
+            Self::Tensor(_, data) => {
+                data.indexed_iter_mut()
+                    .for_each(|(ix, a)| {
+                        *a = f(ix.as_array_view().as_slice().unwrap(), &*a);
+                    })
+            },
+        }
+    }
+
     fn swap_indices(&mut self, a: &T, b: &T) {
         if let Self::Tensor(idxs, data) = self {
             let pos_a
@@ -410,6 +488,14 @@ where T: Idx
                 idxs.swap(k_a, k_b);
                 data.swap_axes(k_a, k_b);
             }
+        }
+    }
+
+    fn swap_indices_pos(&mut self, a: usize, b: usize) {
+        if let Self::Tensor(idxs, data) = self {
+            if a >= idxs.len() || b >= idxs.len() { return; }
+            idxs.swap(a, b);
+            data.swap_axes(a, b);
         }
     }
 
@@ -754,6 +840,20 @@ where T: Idx
             },
         }
     }
+
+    fn into_flat(self) -> (Vec<T>, nd::Array1<A>) {
+        match self {
+            Self::Scalar(a) => (Vec::new(), nd::array![a]),
+            Self::Tensor(idxs, data) => (idxs, data.into_iter().collect()),
+        }
+    }
+
+    fn into_raw(self) -> (Vec<T>, nd::ArrayD<A>) {
+        match self {
+            Self::Scalar(a) => (Vec::new(), nd::array![a].into_dyn()),
+            Self::Tensor(idxs, data) => (idxs, data),
+        }
+    }
 }
 
 impl<T, A> TensorData<T, A>
@@ -907,6 +1007,23 @@ where T: Idx
     /// Return `true` if `self` has the given index.
     pub fn has_index(&self, index: &T) -> bool { self.0.has_index(index) }
 
+    /// Return the position of an index if contained in `self`.
+    pub fn index_pos(&self, index: &T) -> Option<usize> {
+        self.0.index_pos(index)
+    }
+
+    /// Return a mutable reference to an index if contained in `self`.
+    ///
+    /// # Safety
+    /// Mutating an index in such a way that its dimension changes will cause
+    /// unrecoverable errors in all arithmetic operations and book-keeping
+    /// within tensor networks. A call to this function is safe iff mutations to
+    /// the index do not change the index's dimension and still allow the index
+    /// to be identified with its tensor(s) within a network.
+    pub unsafe fn get_index_mut(&mut self, index: &T) -> Option<&mut T> {
+        self.0.get_index_mut(index)
+    }
+
     /// Return the rank of `self`.
     pub fn rank(&self) -> usize { self.0.rank() }
 
@@ -920,12 +1037,51 @@ where T: Idx
     /// If `self` is a scalar, the iterator is empty.
     pub fn indices(&self) -> Indices<'_, T> { self.0.indices() }
 
+    /// Return an iterator over mutable references to all indices.
+    ///
+    /// If `self` is a scalar, the iterator is empty.
+    ///
+    /// # Safety
+    /// Mutating an index in such a way that its dimension changes will cause
+    /// unrecoverable errors in all arithmetic operations and book-keeping
+    /// within tensor networks. A call to this function is safe iff mutations to
+    /// indices do not change the indices' dimensions and still allow each to be
+    /// identified with its tensor(s) within a network.
+    pub unsafe fn indices_mut(&mut self) -> IndicesMut<'_, T> {
+        self.0.indices_mut()
+    }
+
+    /// Apply a mapping function to the (indexed) elements of `self`, returning
+    /// a new array.
+    pub fn map<F, B>(&self, f: F) -> Tensor<T, B>
+    where F: FnMut(&[usize], &A) -> B
+    {
+        self.0.map(f).into()
+    }
+
+    /// Apply a mapping function to the (indexed) elements of `self` in place,
+    /// reassigning to the output of the function.
+    pub fn map_inplace<F>(&mut self, f: F)
+    where F: FnMut(&[usize], &A) -> A
+    {
+        self.0.map_inplace(f);
+    }
+
     /// Swap two indices in the underlying representation of `self`.
     ///
     /// Note that this operation has no bearing over the computational
     /// complexity of tensor contractions. If either given index does not exist
     /// within `self`, no swap is performed.
     pub fn swap_indices(&mut self, a: &T, b: &T) { self.0.swap_indices(a, b); }
+
+    /// Swap two index positions in the underlying representation of `self`.
+    ///
+    /// Note that this operation has no bearing over the computational
+    /// complexity of tensor contractions. If either given index does not exist
+    /// within `self`, no swap is performed.
+    pub fn swap_indices_pos(&mut self, a: usize, b: usize) {
+        self.0.swap_indices_pos(a, b);
+    }
 
     /// Contract `self` with `other` over all common indices, consuming both.
     ///
@@ -1001,6 +1157,21 @@ where T: Idx
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.sub_checked(rhs).map(|data| data.into())
     }
+
+    /// Flatten `self` an ordinary 1D array and a list of indices.
+    ///
+    /// If `self` is a scalar, the list is empty.
+    pub fn into_flat(self) -> (Vec<T>, nd::Array1<A>) {
+        self.0.into_flat()
+    }
+
+    /// Unwrap `self` into a list of indices and an ordinary N-dimensional
+    /// array.
+    ///
+    /// If `self` is a scalar, the list is empty.
+    pub fn into_raw(self) -> (Vec<T>, nd::ArrayD<A>) {
+        self.0.into_raw()
+    }
 }
 
 impl<T, A> Tensor<T, A>
@@ -1011,7 +1182,7 @@ where T: Idx + Ord
     ///
     /// Note that this operation has no bearing over the computational
     /// complexity of tensor contractions.
-    fn sort_indices(&mut self) { self.0.sort_indices() }
+    pub fn sort_indices(&mut self) { self.0.sort_indices() }
 }
 
 impl<T> Tensor<T, C64>

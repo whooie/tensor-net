@@ -14,7 +14,10 @@ use std::{
 };
 use rustc_hash::{ FxHashMap as HashMap };
 use thiserror::Error;
-use crate::tensor::{ self, Tensor, Idx };
+use crate::{
+    pool::{ ContractorPool, PoolError },
+    tensor::{ self, Tensor, Idx },
+};
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
@@ -24,19 +27,28 @@ pub enum NetworkError {
     #[error("error in Network::add_tensor: pre-existing index {0}")]
     PreExistingIndex(String),
 
+    /// Returned when attempting to contract with a tensor ID, but it doesn't
+    /// exist in the network.
+    #[error("error in Network::contract_single: missing ID {0}")]
+    ContractMissingId(usize),
+
     /// Returned when attempting to contract on an unpaired index.
-    #[error("error in Network::do_contract_index: index {0} is unpaired")]
+    #[error("error in Network::contract_single_index: index {0} is unpaired")]
     ContractUnpaired(String),
 
     /// Returned when attempting to contract on an index that does not exist in
     /// a network.
-    #[error("error in Network::do_contract_index: missing index {0}")]
+    #[error("error in Network::contract_single_index: missing index {0}")]
     ContractMissing(String),
 
     /// Returned by anything involving an operation on the level of individual
     /// tensors.
     #[error("tensor error: {0}")]
     TensorError(#[from] tensor::TensorError),
+
+    /// Returned by anything involving a [`ContractorPool`].
+    #[error("contractor pool error: {0}")]
+    ContractorPoolError(#[from] PoolError),
 }
 use NetworkError::*;
 pub type NetworkResult<T> = Result<T, NetworkError>;
@@ -190,6 +202,14 @@ where T: Idx + Hash
         self.nodes.get(&id.into())
     }
 
+    /// Return a mutable reference to a specific tensor in the network, if it
+    /// exists.
+    pub fn get_mut<I>(&mut self, id: I) -> Option<&mut Tensor<T, A>>
+    where I: Into<Id>
+    {
+        self.nodes.get_mut(&id.into())
+    }
+
     /// Return the total number of wires attached to a given tensor, equal to
     /// its rank, if it exists.
     pub fn degree<I>(&self, id: I) -> Option<usize>
@@ -223,6 +243,33 @@ where T: Idx + Hash
     /// The iterator item type is `(&T, `[`Wire`]`)`.
     pub fn indices(&self) -> Indices<'_, T> {
         Indices { iter: self.indices.iter() }
+    }
+
+    /// Apply an updating function to all indices in the network.
+    ///
+    /// # Safety
+    /// Modifying the network's indices in such a way that any bond dimension
+    /// changes or an index is no longer identified with a particular wire
+    /// between tensors will cause unrecoverable errors in network contraction.
+    /// A call to this function is safe iff each bond dimension is invariant in
+    /// the update and every pair of tensors sharing an index before the update
+    /// still share an index after.
+    pub unsafe fn update_indices<F>(&mut self, update: F) -> &mut Self
+    where F: Fn(&mut T)
+    {
+        self.nodes.values_mut()
+            .for_each(|tensor| {
+                tensor.indices_mut()
+                    .for_each(|idx| { update(idx); })
+            });
+        // ownership rules mean we have to allocate
+        let indices_tmp: Vec<(T, Wire)> = self.indices.drain().collect();
+        indices_tmp.into_iter()
+            .for_each(|(mut idx, wire)| { 
+                update(&mut idx);
+                self.indices.insert(idx, wire);
+            });
+        self
     }
 
     /// Return an iterator over all internal indices (connected to tensors on
@@ -275,8 +322,8 @@ where T: Idx + Hash
 
     /// Add a new tensor to the network and return its ID.
     ///
-    /// Fails if any of the new tensor's indices exist in the network as a bond
-    /// between two of its tensors.
+    /// Fails if any of the new tensor's indices already exist in the network as
+    /// a bond/ between two other tensors.
     pub fn push(&mut self, tensor: Tensor<T, A>) -> NetworkResult<Id> {
         let id: Id = self.node_id.into();
         let mut neighbors: HashMap<Id, usize> = HashMap::default();
@@ -377,32 +424,43 @@ where
     }
 
     /// Contract a single pair of tensors named by the index pair `(a, b)`.
-    pub fn do_contract<I, J>(&mut self, a: I, b: J) -> NetworkResult<Id>
+    pub fn contract_single<I, J>(&mut self, a: I, b: J) -> NetworkResult<Id>
     where
         I: Into<Id>,
         J: Into<Id>,
     {
-        let (t_a, _) = self.remove(a.into()).unwrap();
-        let (t_b, _) = self.remove(b.into()).unwrap();
+        let a = a.into();
+        let b = b.into();
+        let (t_a, _) = self.remove(a).ok_or(ContractMissingId(a.0))?;
+        let (t_b, _) = self.remove(b).ok_or(ContractMissingId(b.0))?;
         let t_c = t_a.contract(t_b)?;
         self.push(t_c)
     }
 
-    /// Like [`Self::do_contract`], but with the contraction named by the index
+    /// Like [`Self::contract_single`], but with the contraction named by the index
     /// instead of the tensors.
-    pub fn do_contract_index(&mut self, idx: &T) -> NetworkResult<Id> {
+    ///
+    /// Note that contractions between tensors are automatically performed over
+    /// all shared indices, so there's no need to call this method for each of
+    /// the indices shared by a pair of tensors.
+    pub fn contract_single_index(&mut self, idx: &T) -> NetworkResult<Id> {
         match self.indices.get(idx) {
-            Some(Wire::Paired(a, b)) => self.do_contract(*a, *b),
+            Some(Wire::Paired(a, b)) => self.contract_single(*a, *b),
             Some(Wire::Unpaired(_)) => Err(ContractUnpaired(idx.label())),
             None => Err(ContractMissing(idx.label())),
         }
     }
 
+    fn do_contract(&mut self) -> NetworkResult<&mut Self> {
+        while let Some((a, b)) = self.find_contraction() {
+            self.contract_single(a, b)?;
+        }
+        Ok(self)
+    }
+
     /// Contract the entire network into a single output tensor.
     pub fn contract(mut self) -> NetworkResult<Tensor<T, A>> {
-        while let Some((a, b)) = self.find_contraction() {
-            self.do_contract(a, b)?;
-        }
+        self.do_contract()?;
         if self.count_nodes() > 1 {
             let mut remaining_nodes = self.into_iter();
             let acc = remaining_nodes.next().unwrap();
@@ -413,14 +471,98 @@ where
         }
     }
 
+    /// Contract the network completely but don't consume `self`, instead
+    /// removing and returning the final result.
+    ///
+    /// The network will be left empty but with memory still allocated after
+    /// calling this method.
+    pub fn contract_remove(&mut self) -> NetworkResult<Tensor<T, A>> {
+        self.do_contract()?;
+        if self.count_nodes() > 1 {
+            self.neighbors.clear();
+            self.indices.clear();
+            let mut remaining_nodes = self.nodes.drain();
+            let acc = remaining_nodes.next().unwrap().1;
+            remaining_nodes.try_fold(acc, |a, (_, t)| a.tensor_prod(t))
+                .map_err(NetworkError::from)
+        } else {
+            Ok(self.nodes.drain().next().unwrap().1)
+        }
+    }
+
     /// Contract all paired indices, leaving the result as a network.
     ///
     /// The network may be left with multiple tensors remaining if they have no
     /// common indices.
     pub fn contract_network(&mut self) -> NetworkResult<&mut Self> {
-        while let Some((a, b)) = self.find_contraction() {
-            self.do_contract(a, b)?;
+        self.do_contract()?;
+        Ok(self)
+    }
+}
+
+impl<T, A> Network<T, A>
+where
+    T: Idx + Hash + Send + 'static,
+    A: Clone + Mul<A, Output = A> + Sum + Send + 'static,
+{
+    fn do_contract_par(&mut self, pool: &ContractorPool<T, A>)
+        -> NetworkResult<&mut Self>
+    {
+        let mut contractions: Vec<(Tensor<T, A>, Tensor<T, A>)>
+            = Vec::with_capacity(self.count_nodes() / 2);
+        let mut results: Vec<Tensor<T, A>>;
+        while self.internal_indices().count() > 0 {
+            while let Some((a, b)) = self.find_contraction() {
+                let (t_a, _) = self.remove(a).unwrap();
+                let (t_b, _) = self.remove(b).unwrap();
+                contractions.push((t_a, t_b));
+            }
+            results = pool.do_contractions(contractions.drain(..))?;
+            results.into_iter()
+                .try_for_each(|t| self.push(t).map(|_| ()))?;
         }
+        Ok(self)
+    }
+
+    /// Like [`Self::contract`], but using a thread pool.
+    pub fn contract_par(mut self, pool: &ContractorPool<T, A>)
+        -> NetworkResult<Tensor<T, A>>
+    {
+        self.do_contract_par(pool)?;
+        if self.count_nodes() > 1 {
+            let mut remaining_nodes = self.into_iter();
+            let acc = remaining_nodes.next().unwrap();
+            remaining_nodes.try_fold(acc, |a, t| a.tensor_prod(t))
+                .map_err(NetworkError::from)
+        } else {
+            Ok(self.into_iter().next().unwrap())
+        }
+    }
+
+    /// Like [`Self::contract_remove`], but using a thread pool.
+    pub fn contract_remove_par(&mut self, pool: &ContractorPool<T, A>)
+        -> NetworkResult<Tensor<T, A>>
+    {
+        self.do_contract_par(pool)?;
+        if self.count_nodes() > 1 {
+            self.neighbors.clear();
+            self.indices.clear();
+            let mut remaining_nodes = self.nodes.drain();
+            let acc = remaining_nodes.next().unwrap().1;
+            remaining_nodes.try_fold(acc, |a, (_, t)| a.tensor_prod(t))
+                .map_err(NetworkError::from)
+        } else {
+            self.neighbors.clear();
+            self.indices.clear();
+            Ok(self.nodes.drain().next().unwrap().1)
+        }
+    }
+
+    /// Like [`Self::contract_network`], but using a thread pool.
+    pub fn contract_network_par(&mut self, pool: &ContractorPool<T, A>)
+        -> NetworkResult<&mut Self>
+    {
+        self.do_contract_par(pool)?;
         Ok(self)
     }
 }
