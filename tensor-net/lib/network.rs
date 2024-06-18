@@ -6,6 +6,64 @@
 //! identified by common indices, so each particular index can only exist as
 //! either an unbonded degree of freedom or a bond between exactly two tensors
 //! in the network.
+//!
+//! ```
+//! use tensor_net::{
+//!     network::Network,
+//!     pool::ContractorPool,
+//!     tensor::{ Idx, Tensor },
+//! };
+//!
+//! // our index type (see the Idx trait for static versus dynamic index types)
+//! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+//! enum Index { A, B, C, D }
+//!
+//! // every index has a dimension and a label
+//! impl Idx for Index {
+//!     fn dim(&self) -> usize {
+//!         match self {
+//!             Self::A => 3,
+//!             Self::B => 4,
+//!             Self::C => 5,
+//!             Self::D => 2,
+//!         }
+//!     }
+//!
+//!     fn label(&self) -> String { format!("{:?}", self) }
+//! }
+//!
+//! let a = Tensor::new([Index::A, Index::B], |_| 1.0).unwrap();
+//! println!("{}", a);
+//! // [[1, 1, 1, 1],
+//! //  [1, 1, 1, 1],
+//! //  [1, 1, 1, 1]] { A, B }
+//!
+//! let b = Tensor::new([Index::B, Index::C], |_| 2.0).unwrap();
+//! println!("{}", b);
+//! // [[2, 2, 2, 2, 2],
+//! //  [2, 2, 2, 2, 2],
+//! //  [2, 2, 2, 2, 2],
+//! //  [2, 2, 2, 2, 2]] { B, C }
+//!
+//! let c = Tensor::new([Index::A, Index::C], |_| 3.0).unwrap();
+//! // [[3, 3, 3, 3, 3],
+//! //  [3, 3, 3, 3, 3],
+//! //  [3, 3, 3, 3, 3]] { A, C }
+//!
+//! let d = Tensor::new([Index::D], |_| 4.0).unwrap();
+//! // [4, 4] { D }
+//!
+//! // construct a network to compute the contraction (in Einstein sum notation)
+//! // A_{a,b} B_{b,c} C_{a,c} D_{d}
+//! let net = Network::from_nodes([a, b, c, d]).unwrap();
+//!
+//! // contraction can be performed in parallel using a thread pool
+//! let pool = ContractorPool::new_cpus(); // #threads == #cpu cores
+//!
+//! let res = net.contract_par(&pool).unwrap();
+//! println!("{}", res);
+//! // [1440, 1440] { D }
+//! ```
 
 use std::{
     hash::Hash,
@@ -161,7 +219,7 @@ pub struct Network<T, A> {
 }
 
 impl<T, A> Network<T, A>
-where T: Idx + Hash
+where T: Idx
 {
     /// Create a new, empty network.
     pub fn new() -> Self {
@@ -270,6 +328,27 @@ where T: Idx + Hash
                 self.indices.insert(idx, wire);
             });
         self
+    }
+
+    /// Apply a mapping function to all indices in the network.
+    ///
+    /// # Safety
+    /// Modifying the network's indices in such a way that any bond dimension
+    /// changes or an index is no longer identified with a particular wire
+    /// between tensors will cause unrecoverable errors in network contraction.
+    /// A call to this function is safe iff each bond dimension is invariant in
+    /// the update and every pair of tensors sharing an index before the update
+    /// still share an index after.
+    pub unsafe fn map_indices<F, U>(self, map: F)
+        -> NetworkResult<Network<U, A>>
+    where
+        F: Fn(T) -> U,
+        U: Idx,
+    {
+        Network::from_nodes(
+            self.into_iter()
+                .map(|node| node.map_indices(&map))
+        )
     }
 
     /// Return an iterator over all internal indices (connected to tensors on
@@ -394,14 +473,14 @@ where T: Idx + Hash
 
 impl<T, A> Network<T, A>
 where
-    T: Idx + Hash,
+    T: Idx,
     A: Clone + Mul<A, Output = A> + Sum,
 {
     /// Simple greedy algorithm to find the next contraction step, optimized
     /// over only a single contraction.
     fn find_contraction(&self) -> Option<(Id, Id)> {
         fn costf<T, A>(net: &Network<T, A>, id_a: &Id, id_b: &Id) -> usize
-        where T: Idx + Hash
+        where T: Idx
         {
             let a = net.get(id_a).unwrap();
             let b = net.get(id_b).unwrap();
@@ -502,7 +581,7 @@ where
 
 impl<T, A> Network<T, A>
 where
-    T: Idx + Hash + Send + 'static,
+    T: Idx + Send + 'static,
     A: Clone + Mul<A, Output = A> + Sum + Send + 'static,
 {
     fn do_contract_par(&mut self, pool: &ContractorPool<T, A>)

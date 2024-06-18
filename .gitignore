@@ -2,4 +2,4 @@
 **.png
 **.svg
 **.pdf
-tensor-net/examples/test.rs
+tensor-net/examples/*

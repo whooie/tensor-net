@@ -25,6 +25,45 @@
 //! *C*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
 //!   = *A*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub></sub>
 //!   × *B*<sub>*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
+//!
+//! ```
+//! use tensor_net::tensor::{ Idx, Tensor }; // see the Idx trait
+//!
+//! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+//! enum Index { A, B, C }
+//!
+//! impl Idx for Index {
+//!     fn dim(&self) -> usize {
+//!         match self {
+//!             Self::A => 3,
+//!             Self::B => 4,
+//!             Self::C => 5,
+//!         }
+//!     }
+//!
+//!     fn label(&self) -> String { format!("{:?}", self) }
+//! }
+//!
+//! let a = Tensor::new([Index::A, Index::B], |_| 1.0).unwrap();
+//! println!("{}", a);
+//! // [[1, 1, 1, 1],
+//! //  [1, 1, 1, 1],
+//! //  [1, 1, 1, 1]] { A, B }
+//!
+//! let b = Tensor::new([Index::B, Index::C], |_| 2.0).unwrap();
+//! println!("{}", b);
+//! // [[2, 2, 2, 2, 2],
+//! //  [2, 2, 2, 2, 2],
+//! //  [2, 2, 2, 2, 2],
+//! //  [2, 2, 2, 2, 2]] { B, C }
+//!
+//! let c = a.contract(b).unwrap(); // C_{a,c} = A_{a,b} B_{b,c}
+//! println!("{}", c);
+//! // [[8, 8, 8, 8, 8],
+//! //  [8, 8, 8, 8, 8],
+//! //  [8, 8, 8, 8, 8]] { A, C }
+//! ```
+
 
 use std::{
     fmt,
@@ -34,7 +73,7 @@ use std::{
 };
 use itertools::Itertools;
 use ndarray::{ self as nd, Dimension };
-use num_complex::Complex64 as C64;
+use num_complex::ComplexFloat;
 use rustc_hash::FxHashSet as HashSet;
 use thiserror::Error;
 
@@ -121,6 +160,8 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// Ultimately, static representations should be preferred where possible.
 pub trait Idx: Clone + Eq + Hash {
     /// Return the number of values the index can take.
+    ///
+    /// This value must never be zero.
     fn dim(&self) -> usize;
 
     /// Return an identifying label for the index. This method is used only for
@@ -240,7 +281,6 @@ where
     T: Idx,
     A: fmt::Display,
 {
-    #[allow(unused_variables)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Scalar(a) => {
@@ -372,7 +412,11 @@ where T: Idx
         {
             return Err(IncompatibleShape);
         }
-        Ok(Self::Tensor(indices, array.into_dyn()))
+        if indices.is_empty() {
+            Ok(Self::Scalar(array.into_iter().next().unwrap()))
+        } else {
+            Ok(Self::Tensor(indices, array.into_dyn()))
+        }
     }
 
     unsafe fn from_array_unchecked<I, D>(indices: I, array: nd::Array<A, D>)
@@ -440,6 +484,20 @@ where T: Idx
             Self::Scalar(_) => IndicesMut(IndicesMutData::Scalar),
             Self::Tensor(idxs, _)
                 => IndicesMut(IndicesMutData::Tensor(idxs.iter_mut())),
+        }
+    }
+
+    unsafe fn map_indices<F, U>(self, map: F) -> TensorData<U, A>
+    where
+        F: Fn(T) -> U,
+        U: Idx,
+    {
+        match self {
+            Self::Scalar(a) => TensorData::Scalar(a),
+            Self::Tensor(idxs, data) => {
+                let idxs = idxs.into_iter().map(map).collect();
+                TensorData::Tensor(idxs, data)
+            },
         }
     }
 
@@ -878,8 +936,10 @@ where T: Idx + Ord
     }
 }
 
-impl<T> TensorData<T, C64>
-where T: Idx
+impl<T, A> TensorData<T, A>
+where
+    T: Idx,
+    A: ComplexFloat,
 {
     fn conj(&self) -> Self {
         match self {
@@ -1051,6 +1111,24 @@ where T: Idx
         self.0.indices_mut()
     }
 
+    /// Apply a mapping function to all indices.
+    ///
+    /// If `self` is a scalar, no operation is performed.
+    ///
+    /// # Safety
+    /// Mutating an index in such a way that its dimension changes will cause
+    /// unrecoverable errors in all arithmetic operations and book-keeping
+    /// within tensor networks. A call to this function is safe iff
+    /// transformations to indices do not change the indices' dimensions and
+    /// still allow each to be identified with its tensor(s) within a network.
+    pub unsafe fn map_indices<F, U>(self, map: F) -> Tensor<U, A>
+    where
+        F: Fn(T) -> U,
+        U: Idx,
+    {
+        self.0.map_indices(map).into()
+    }
+
     /// Apply a mapping function to the (indexed) elements of `self`, returning
     /// a new array.
     pub fn map<F, B>(&self, f: F) -> Tensor<T, B>
@@ -1185,8 +1263,10 @@ where T: Idx + Ord
     pub fn sort_indices(&mut self) { self.0.sort_indices() }
 }
 
-impl<T> Tensor<T, C64>
-where T: Idx
+impl<T, A> Tensor<T, A>
+where
+    T: Idx,
+    A: ComplexFloat,
 {
     /// Return a new tensor containing the element-wise conjugation of `self`.
     pub fn conj(&self) -> Self { self.0.conj().into() }
