@@ -6,7 +6,7 @@
 use std::ops::Range;
 use rand::{ rngs::StdRng, Rng, SeedableRng };
 use rustc_hash::FxHashSet as HashSet;
-use num_complex::Complex32 as C32;
+use num_complex::Complex64 as C64;
 use crate::{
     gate::{ GateToken, Gate, G1, G2 },
     mps::MPS,
@@ -20,7 +20,7 @@ pub type Set<T> = HashSet<T>;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Q(
     /// The qubit index.
-    usize
+    pub(crate) usize
 );
 
 impl From<usize> for Q {
@@ -181,7 +181,7 @@ pub type MeasRecord = Vec<MeasLayer>;
 /// measurement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MPSCircuit {
-    pub state: MPS<Q, C32>,
+    pub state: MPS<Q, C64>,
     n: usize,
     rng: StdRng,
 }
@@ -198,7 +198,7 @@ impl MPSCircuit {
     /// *Panics* if `n` is zero.
     pub fn new(
         n: usize,
-        eps: Option<f32>,
+        eps: Option<f64>,
         seed: Option<u64>,
     ) -> Self
     {
@@ -211,7 +211,7 @@ impl MPSCircuit {
     }
 
     /// Unwrap `self` into the current state.
-    pub fn into_state(self) -> MPS<Q, C32> { self.state }
+    pub fn into_state(self) -> MPS<Q, C64> { self.state }
 
     /// Return the number of qubits.
     pub fn n(&self) -> usize { self.n }
@@ -257,7 +257,7 @@ impl MPSCircuit {
         enum Pred<'a> {
             Never,
             Always,
-            Prob(f32),
+            Prob(f64),
             Func(Box<dyn Fn(usize) -> bool + 'a>),
         }
 
@@ -278,7 +278,7 @@ impl MPSCircuit {
                                 .map(Outcome::from);
                         },
                         Pred::Prob(p) => {
-                            *outk = if circ.rng.gen::<f32>() < *p {
+                            *outk = if circ.rng.gen::<f64>() < *p {
                                 circ.state.measure(k, &mut circ.rng)
                                     .map(Outcome::from)
                             } else {
@@ -359,7 +359,7 @@ impl MPSCircuit {
         }
     }
 
-    fn entropy(&self, config: &EntropyConfig) -> f32 {
+    fn entropy(&self, config: &EntropyConfig) -> f64 {
         match config {
             EntropyConfig::VonNeumann(part) => {
                 let Range { start, end } = part;
@@ -394,8 +394,8 @@ impl MPSCircuit {
         &mut self,
         config: &mut CircuitConfig,
         mut meas: Option<&mut MeasRecord>,
-        mut entropy: Option<&mut Vec<f32>>,
-        // mut mutinf: Option<(&mut Vec<f32>, Option<usize>)>,
+        mut entropy: Option<&mut Vec<f64>>,
+        // mut mutinf: Option<(&mut Vec<f64>, Option<usize>)>,
     ) {
         let CircuitConfig {
             depth: depth_conf,
@@ -407,13 +407,13 @@ impl MPSCircuit {
         let meas_conf = *meas_conf;
 
         let mut outcomes: MeasLayer = vec![None; self.n];
-        let mut s: f32 = self.entropy(entropy_conf);
+        let mut s: f64 = self.entropy(entropy_conf);
         if let Some(rcd) = entropy.as_mut() { rcd.push(s); }
-        let mut sbar: f32 = 0.0;
-        let mut check: f32;
+        let mut sbar: f64 = 0.0;
+        let mut check: f64;
 
         let mut gates: Vec<Gate> = Vec::new();
-        let mut d: usize = 0;
+        let mut d: usize = 1;
         loop {
             gates.clear();
             match gate_conf {
@@ -457,14 +457,14 @@ impl MPSCircuit {
                 DepthConfig::Unlimited => { },
                 DepthConfig::Converge(tol) => {
                     check = (
-                        2.0 * (sbar - s) / ((2 * d + 3) as f32 * sbar + s)
+                        2.0 * (sbar - s) / ((2 * d + 3) as f64 * sbar + s)
                     ).abs();
                     if check < tol.unwrap_or(1e-6) { break; }
-                    sbar = (sbar + (d + 1) as f32 + s) / (d + 2) as f32;
+                    sbar = (sbar + (d + 1) as f64 + s) / (d + 2) as f64;
                 },
                 DepthConfig::Const(d0) => { if d >= d0 { break; } },
             }
-            d += 2;
+            d += 1;
         }
     }
 
@@ -476,8 +476,8 @@ impl MPSCircuit {
         &mut self,
         mut config: CircuitConfig,
         meas: Option<&mut MeasRecord>,
-    ) -> Vec<f32> {
-        let mut entropy: Vec<f32> = Vec::new();
+    ) -> Vec<f64> {
+        let mut entropy: Vec<f64> = Vec::new();
         self.do_run(&mut config, meas, Some(&mut entropy), /* None */);
         entropy
     }
@@ -491,8 +491,8 @@ impl MPSCircuit {
     //     mut config: CircuitConfig,
     //     part_size: Option<usize>,
     //     meas: Option<&mut MeasRecord>,
-    // ) -> Vec<f32> {
-    //     let mut mutinf: Vec<f32> = Vec::new();
+    // ) -> Vec<f64> {
+    //     let mut mutinf: Vec<f64> = Vec::new();
     //     self.do_run(&mut config, meas, None, Some((&mut mutinf, part_size)));
     //     mutinf
     // }
@@ -535,7 +535,7 @@ pub enum Feedback {
 }
 
 /// A feedback function.
-type FeedbackFn<'a> = Box<dyn FnMut(usize, f32, &[Option<Outcome>]) -> Feedback + 'a>;
+type FeedbackFn<'a> = Box<dyn FnMut(usize, f64, &[Option<Outcome>]) -> Feedback + 'a>;
 
 /// Set the termination condition for a circuit.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -556,7 +556,7 @@ pub enum DepthConfig {
     /// entropy has reached a steady state when the absolute difference between
     /// consecutive values of the running average divided by their mean is less
     /// than *tol*.
-    Converge(Option<f32>),
+    Converge(Option<f64>),
     /// Run for a constant depth.
     Const(usize),
 }
@@ -593,13 +593,13 @@ impl G1Set {
     pub fn sample<R>(&self, k: usize, rng: &mut R) -> Gate
     where R: Rng + ?Sized
     {
-        use std::f32::consts::TAU;
+        use std::f64::consts::TAU;
         match self {
             Self::All => match rng.gen_range(0..8_u8) {
                 0 => {
-                    let alpha: f32 = TAU * rng.gen::<f32>();
-                    let beta: f32 = TAU * rng.gen::<f32>();
-                    let gamma: f32 = TAU * rng.gen::<f32>();
+                    let alpha: f64 = TAU * rng.gen::<f64>();
+                    let beta: f64 = TAU * rng.gen::<f64>();
+                    let gamma: f64 = TAU * rng.gen::<f64>();
                     Gate::U(k, alpha, beta, gamma)
                 },
                 1 => Gate::H(k),
@@ -607,14 +607,14 @@ impl G1Set {
                 3 => Gate::Z(k),
                 4 => Gate::S(k),
                 5 => Gate::SInv(k),
-                6 => Gate::XRot(k, TAU * rng.gen::<f32>()),
-                7 => Gate::ZRot(k, TAU * rng.gen::<f32>()),
+                6 => Gate::XRot(k, TAU * rng.gen::<f64>()),
+                7 => Gate::ZRot(k, TAU * rng.gen::<f64>()),
                 _ => unreachable!(),
             },
             Self::U => {
-                let alpha: f32 = TAU * rng.gen::<f32>();
-                let beta: f32 = TAU * rng.gen::<f32>();
-                let gamma: f32 = TAU * rng.gen::<f32>();
+                let alpha: f64 = TAU * rng.gen::<f64>();
+                let beta: f64 = TAU * rng.gen::<f64>();
+                let gamma: f64 = TAU * rng.gen::<f64>();
                 Gate::U(k, alpha, beta, gamma)
             },
             Self::H => Gate::H(k),
@@ -622,8 +622,8 @@ impl G1Set {
             Self::Z => Gate::Z(k),
             Self::S => Gate::S(k),
             Self::SInv => Gate::SInv(k),
-            Self::XRot => Gate::XRot(k, TAU * rng.gen::<f32>()),
-            Self::ZRot => Gate::ZRot(k, TAU * rng.gen::<f32>()),
+            Self::XRot => Gate::XRot(k, TAU * rng.gen::<f64>()),
+            Self::ZRot => Gate::ZRot(k, TAU * rng.gen::<f64>()),
             Self::HS => if rng.gen::<bool>() {
                 Gate::H(k)
             } else {
@@ -714,7 +714,7 @@ pub enum MeasLayerConfig {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum MeasProbConfig {
     /// Perform measurements randomly, as normal, with fixed probability.
-    Random(f32),
+    Random(f64),
     /// Perform a measurement on every `n`-th qubit, shifting by 1 on every
     /// measurement layer. `Cycling(0)` means to never measure any qubit and
     /// `Cycling(1)` means to always measure every qubit.
@@ -732,7 +732,7 @@ pub enum EntropyConfig {
     /// The Von Neumann entropy.
     VonNeumann(Range<usize>),
     /// The Rényi entropy using a density matrix in the local Schmidt basis.
-    RenyiSchmidt(Range<usize>, f32),
+    RenyiSchmidt(Range<usize>, f64),
     // /// The Rényi entropy in the computational basis.
     // ///
     // /// **Warning**: this entropy is calculated by contracting the state into a

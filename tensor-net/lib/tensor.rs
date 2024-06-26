@@ -68,10 +68,9 @@
 use std::{
     fmt,
     hash::Hash,
-    iter::Sum,
-    ops::{ Deref, Add, Sub, Mul, Range },
+    ops::{ Add, Sub, Mul, Range },
 };
-use itertools::Itertools;
+// use itertools::Itertools;
 use ndarray::{ self as nd, Dimension };
 use num_complex::ComplexFloat;
 use rustc_hash::FxHashSet as HashSet;
@@ -565,12 +564,14 @@ where T: Idx
         mut b: nd::ArrayD<B>,
     ) -> TensorData<T, C>
     where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-        C: Sum,
+        A: nd::LinalgScalar,
+        B: nd::LinalgScalar,
+        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
     {
-        // swap common indices and corresponding axes to the leftmost
-        // positions to make summing easier
+        // swap common indices and corresponding axes to the rightmost
+        // positions in a and the leftmost in b
+        let n_idx_a = idxs_a.len();
+        let n_common = idx_common.len();
         let mut k_source: usize;
         for (k_target, idx) in idx_common.iter().enumerate() {
             k_source
@@ -580,8 +581,8 @@ where T: Idx
                     (idx_source == idx).then_some(k_source)
                 })
                 .unwrap();
-            idxs_a.swap(k_target, k_source);
-            a.swap_axes(k_target, k_source);
+            idxs_a.swap(k_source, n_idx_a - n_common + k_target);
+            a.swap_axes(k_source, n_idx_a - n_common + k_target);
 
             k_source
                 = idxs_b.iter()
@@ -590,102 +591,161 @@ where T: Idx
                     (idx_source == idx).then_some(k_source)
                 })
                 .unwrap();
-            idxs_b.swap(k_target, k_source);
-            b.swap_axes(k_target, k_source);
+            idxs_b.swap(k_source, k_target);
+            b.swap_axes(k_source, k_target);
         }
 
-        // construct the new tensor component-wise
-        let n_ix: usize = idx_common.len();
-        let n_idx_a: usize = idxs_a.len() - n_ix;
-        let n_idx_b: usize = idxs_b.len() - n_ix;
+        // reshape to fuse all common and non-common indices together so we can
+        // use matmul and then reshape the result to un-fuse
+        let dim_noncomm_a
+            = idxs_a.iter().take(n_idx_a - n_common).map(Idx::dim).product();
+        let dim_comm
+            = idx_common.iter().map(Idx::dim).product();
+        let dim_noncomm_b
+            = idxs_b.iter().skip(n_common).map(Idx::dim).product();
+        let a: nd::Array2<A>
+            = a.into_iter()
+            .collect::<nd::Array1<A>>()
+            .into_shape((dim_noncomm_a, dim_comm))
+            .unwrap();
+        let b: nd::Array2<B>
+            = b.into_iter()
+            .collect::<nd::Array1<B>>()
+            .into_shape((dim_comm, dim_noncomm_b))
+            .unwrap();
+        let c: nd::Array2<C> = a.dot(&b);
         let new_shape: Vec<usize>
-            = idxs_a.iter().skip(n_ix)
-            .chain(idxs_b.iter().skip(n_ix))
-            .map(|idx| idx.dim())
+            = idxs_a.iter().take(n_idx_a - n_common)
+            .chain(idxs_b.iter().skip(n_common))
+            .map(Idx::dim)
             .collect();
         if new_shape.is_empty() {
-            let c: C
-                = idx_common.iter()
-                .map(|idx| idx.iter())
-                .multi_cartesian_product()
-                .map(|k_sum| {
-                    a[k_sum.deref()].clone() * b[k_sum.deref()].clone()
-                })
-                .sum();
+            let c: C = c.into_iter().next().unwrap();
             TensorData::Scalar(c)
         } else {
-            let mut k_res: Vec<usize> = vec![0; n_idx_a + n_idx_b];
-            let mut k_a: Vec<usize> = vec![0; n_ix + n_idx_a];
-            let mut k_b: Vec<usize> = vec![0; n_ix + n_idx_b];
-            let new_data: nd::ArrayD<C>
-                = nd::ArrayD::from_shape_fn(
-                    new_shape,
-                    |k_res_dim| {
-                        k_res.iter_mut()
-                            .zip(k_res_dim.as_array_view())
-                            .for_each(|(k_res_ref, k_res_dim_ref)| {
-                                *k_res_ref = *k_res_dim_ref;
-                            });
-                        k_a.iter_mut()
-                            .skip(n_ix)
-                            .zip(k_res.iter().take(n_idx_a))
-                            .for_each(|(k_a_ref, k_res_ref)| {
-                                *k_a_ref = *k_res_ref;
-                            });
-                        k_b.iter_mut()
-                            .skip(n_ix)
-                            .zip(k_res.iter().skip(n_idx_a).take(n_idx_b))
-                            .for_each(|(k_b_ref, k_res_ref)| {
-                                *k_b_ref = *k_res_ref;
-                            });
-                        idx_common.iter()
-                            .map(|idx| idx.iter())
-                            .multi_cartesian_product()
-                            .map(|k_sum| {
-                                k_a.iter_mut()
-                                    .take(n_ix)
-                                    .zip(k_sum.iter())
-                                    .for_each(|(k_a_ref, k_sum_ref)| {
-                                        *k_a_ref = *k_sum_ref;
-                                    });
-                                k_b.iter_mut()
-                                    .take(n_ix)
-                                    .zip(k_sum.iter())
-                                    .for_each(|(k_b_ref, k_sum_ref)| {
-                                        *k_b_ref = *k_sum_ref;
-                                    });
-                                a[k_a.deref()].clone()
-                                    * b[k_b.deref()].clone()
-                            })
-                            .sum::<C>()
-                    }
-                );
             let new_idxs: Vec<T>
-                = idxs_a.into_iter()
-                .skip(n_ix)
-                .chain(idxs_b.into_iter().skip(n_ix))
+                = idxs_a.into_iter().take(n_idx_a - n_common)
+                .chain(idxs_b.into_iter().skip(n_common))
                 .collect();
-            TensorData::Tensor(new_idxs, new_data)
+            let c = c.into_shape(new_shape).unwrap().into_dyn();
+            TensorData::Tensor(new_idxs, c)
         }
+
+        // let mut k_source: usize;
+        // for (k_target, idx) in idx_common.iter().enumerate() {
+        //     k_source
+        //         = idxs_a.iter()
+        //         .enumerate()
+        //         .find_map(|(k_source, idx_source)| {
+        //             (idx_source == idx).then_some(k_source)
+        //         })
+        //         .unwrap();
+        //     idxs_a.swap(k_source, k_target);
+        //     a.swap_axes(k_source, k_target);
+        //
+        //     k_source
+        //         = idxs_b.iter()
+        //         .enumerate()
+        //         .find_map(|(k_source, idx_source)| {
+        //             (idx_source == idx).then_some(k_source)
+        //         })
+        //         .unwrap();
+        //     idxs_b.swap(k_source, k_target);
+        //     b.swap_axes(k_source, k_target);
+        // }
+        //
+        // // construct the new tensor component-wise
+        // let n_ix: usize = idx_common.len();
+        // let n_idx_a: usize = idxs_a.len() - n_ix;
+        // let n_idx_b: usize = idxs_b.len() - n_ix;
+        // let new_shape: Vec<usize>
+        //     = idxs_a.iter().skip(n_ix)
+        //     .chain(idxs_b.iter().skip(n_ix))
+        //     .map(|idx| idx.dim())
+        //     .collect();
+        // if new_shape.is_empty() {
+        //     let c: C
+        //         = idx_common.iter()
+        //         .map(|idx| idx.iter())
+        //         .multi_cartesian_product()
+        //         .map(|k_sum| {
+        //             a[k_sum.deref()].clone() * b[k_sum.deref()].clone()
+        //         })
+        //         .sum();
+        //     TensorData::Scalar(c)
+        // } else {
+        //     let mut k_res: Vec<usize> = vec![0; n_idx_a + n_idx_b];
+        //     let mut k_a: Vec<usize> = vec![0; n_ix + n_idx_a];
+        //     let mut k_b: Vec<usize> = vec![0; n_ix + n_idx_b];
+        //     let new_data: nd::ArrayD<C>
+        //         = nd::ArrayD::from_shape_fn(
+        //             new_shape,
+        //             |k_res_dim| {
+        //                 k_res.iter_mut()
+        //                     .zip(k_res_dim.as_array_view())
+        //                     .for_each(|(k_res_ref, k_res_dim_ref)| {
+        //                         *k_res_ref = *k_res_dim_ref;
+        //                     });
+        //                 k_a.iter_mut()
+        //                     .skip(n_ix)
+        //                     .zip(k_res.iter().take(n_idx_a))
+        //                     .for_each(|(k_a_ref, k_res_ref)| {
+        //                         *k_a_ref = *k_res_ref;
+        //                     });
+        //                 k_b.iter_mut()
+        //                     .skip(n_ix)
+        //                     .zip(k_res.iter().skip(n_idx_a).take(n_idx_b))
+        //                     .for_each(|(k_b_ref, k_res_ref)| {
+        //                         *k_b_ref = *k_res_ref;
+        //                     });
+        //                 idx_common.iter()
+        //                     .map(|idx| idx.iter())
+        //                     .multi_cartesian_product()
+        //                     .map(|k_sum| {
+        //                         k_a.iter_mut()
+        //                             .take(n_ix)
+        //                             .zip(k_sum.iter())
+        //                             .for_each(|(k_a_ref, k_sum_ref)| {
+        //                                 *k_a_ref = *k_sum_ref;
+        //                             });
+        //                         k_b.iter_mut()
+        //                             .take(n_ix)
+        //                             .zip(k_sum.iter())
+        //                             .for_each(|(k_b_ref, k_sum_ref)| {
+        //                                 *k_b_ref = *k_sum_ref;
+        //                             });
+        //                         a[k_a.deref()].clone()
+        //                             * b[k_b.deref()].clone()
+        //                     })
+        //                     .sum::<C>()
+        //             }
+        //         );
+        //     let new_idxs: Vec<T>
+        //         = idxs_a.into_iter()
+        //         .skip(n_ix)
+        //         .chain(idxs_b.into_iter().skip(n_ix))
+        //         .collect();
+        //     TensorData::Tensor(new_idxs, new_data)
+        // }
     }
 
     fn contract<B, C>(self, other: TensorData<T, B>)
         -> TensorResult<TensorData<T, C>>
     where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-        C: Sum,
+        A: Mul<B, Output = C> + nd::LinalgScalar,
+        B: nd::LinalgScalar,
+        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
     {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 Ok(TensorData::Scalar(a * b))
             },
             (TensorData::Scalar(a), TensorData::Tensor(idxs, b)) => {
-                let mul: nd::ArrayD<C> = b.mapv(|bk| a.clone() * bk);
+                let mul: nd::ArrayD<C> = b.mapv(|bk| a * bk);
                 Ok(TensorData::Tensor(idxs, mul))
             },
             (TensorData::Tensor(idxs, a), TensorData::Scalar(b)) => {
-                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b.clone());
+                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b);
                 Ok(TensorData::Tensor(idxs, mul))
             },
             (TensorData::Tensor(idxs_a, a), TensorData::Tensor(idxs_b, b)) => {
@@ -760,20 +820,20 @@ where T: Idx
 
     fn multiply<B, C>(self, other: TensorData<T, B>) -> TensorData<T, C>
     where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-        C: Sum,
+        A: Mul<B, Output = C> + nd::LinalgScalar,
+        B: nd::LinalgScalar,
+        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
     {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 TensorData::Scalar(a * b)
             },
             (TensorData::Scalar(a), TensorData::Tensor(idxs, b)) => {
-                let mul: nd::ArrayD<C> = b.mapv(|bk| a.clone() * bk);
+                let mul: nd::ArrayD<C> = b.mapv(|bk| a * bk);
                 TensorData::Tensor(idxs, mul)
             },
             (TensorData::Tensor(idxs, a), TensorData::Scalar(b)) => {
-                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b.clone());
+                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b);
                 TensorData::Tensor(idxs, mul)
             },
             (TensorData::Tensor(idxs_a, a), TensorData::Tensor(idxs_b, b)) => {
@@ -954,9 +1014,9 @@ where
 impl<T, A, B, C> Mul<TensorData<T, B>> for TensorData<T, A>
 where
     T: Idx,
-    A: Clone + Mul<B, Output = C>,
-    B: Clone,
-    C: Sum,
+    A: Mul<B, Output = C> + nd::LinalgScalar,
+    B: nd::LinalgScalar,
+    nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
 {
     type Output = TensorData<T, C>;
 
@@ -1172,9 +1232,9 @@ where T: Idx
     pub fn contract<B, C>(self, other: Tensor<T, B>)
         -> TensorResult<Tensor<T, C>>
     where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-        C: Sum,
+        A: Mul<B, Output = C> + nd::LinalgScalar,
+        B: nd::LinalgScalar,
+        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
     {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.contract(rhs).map(|data| data.into())
@@ -1193,7 +1253,6 @@ where T: Idx
     where
         A: Clone + Mul<B, Output = C>,
         B: Clone,
-        C: Sum,
     {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.tensor_prod(rhs).map(|data| data.into())
@@ -1206,9 +1265,9 @@ where T: Idx
     /// otherwise a [tensor product][Self::tensor_prod].
     pub fn multiply<B, C>(self, other: Tensor<T, B>) -> Tensor<T, C>
     where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-        C: Sum,
+        A: Mul<B, Output = C> + nd::LinalgScalar,
+        B: nd::LinalgScalar,
+        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
     {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.multiply(rhs).into()
@@ -1275,9 +1334,9 @@ where
 impl<T, A, B, C> Mul<Tensor<T, B>> for Tensor<T, A>
 where
     T: Idx,
-    A: Clone + Mul<B, Output = C>,
-    B: Clone,
-    C: Sum,
+    A: Mul<B, Output = C> + nd::LinalgScalar,
+    B: nd::LinalgScalar,
+    nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
 {
     type Output = Tensor<T, C>;
 

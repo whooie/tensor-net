@@ -67,9 +67,9 @@
 
 use std::{
     hash::Hash,
-    iter::Sum,
     ops::{ Deref, DerefMut, Mul },
 };
+use ndarray as nd;
 use rustc_hash::{ FxHashMap as HashMap };
 use thiserror::Error;
 use crate::{
@@ -474,7 +474,7 @@ where T: Idx
 impl<T, A> Network<T, A>
 where
     T: Idx,
-    A: Clone + Mul<A, Output = A> + Sum,
+    A: Mul<A, Output = A> + nd::LinalgScalar,
 {
     /// Simple greedy algorithm to find the next contraction step, optimized
     /// over only a single contraction.
@@ -582,7 +582,7 @@ where
 impl<T, A> Network<T, A>
 where
     T: Idx + Send + 'static,
-    A: Clone + Mul<A, Output = A> + Sum + Send + 'static,
+    A: Mul<A, Output = A> + nd::LinalgScalar + Send + 'static,
 {
     fn do_contract_par(&mut self, pool: &ContractorPool<T, A>)
         -> NetworkResult<&mut Self>

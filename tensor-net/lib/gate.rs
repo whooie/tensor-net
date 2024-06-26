@@ -2,7 +2,7 @@
 //! [`MPS`][crate::mps::MPS] and [`MPSCircuit`][crate::circuit::MPSCircuit].
 
 use ndarray as nd;
-use num_complex::{ ComplexFloat, Complex32 as C32 };
+use num_complex::{ ComplexFloat, Complex64 as C64 };
 use num_traits::One;
 use once_cell::sync::Lazy;
 use rand::Rng;
@@ -15,7 +15,7 @@ use crate::ComplexFloatExt;
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Gate {
     /// A gate formed from an Euler angle decomposition.
-    U(usize, f32, f32, f32),
+    U(usize, f64, f64, f64),
     /// Hadamard.
     H(usize),
     /// π rotation about X.
@@ -27,9 +27,9 @@ pub enum Gate {
     /// –π/2 rotation about Z.
     SInv(usize),
     /// An arbitrary rotation about X.
-    XRot(usize, f32),
+    XRot(usize, f64),
     /// An arbitrary rotation about Z.
-    ZRot(usize, f32),
+    ZRot(usize, f64),
     /// Z-controlled π rotation about X.
     ///
     /// `CX(k)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
@@ -111,15 +111,15 @@ impl Gate {
     pub fn sample_c1<R>(k: usize, rng: &mut R) -> Self
     where R: Rng + ?Sized
     {
-        use std::f32::consts::TAU;
+        use std::f64::consts::TAU;
         match rng.gen_range(0..8) {
             0 => Self::H(k),
             1 => Self::X(k),
             3 => Self::Z(k),
             4 => Self::S(k),
             5 => Self::SInv(k),
-            6 => Self::XRot(k, TAU * rng.gen::<f32>()),
-            7 => Self::ZRot(k, TAU * rng.gen::<f32>()),
+            6 => Self::XRot(k, TAU * rng.gen::<f64>()),
+            7 => Self::ZRot(k, TAU * rng.gen::<f64>()),
             _ => unreachable!(),
         }
     }
@@ -301,12 +301,12 @@ impl GateToken<Gate> for G1 {
     fn sample<R>(&self, op: usize, rng: &mut R) -> Gate
     where R: Rng + ?Sized
     {
-        use std::f32::consts::TAU;
+        use std::f64::consts::TAU;
         match self {
             Self::U => {
-                let alpha: f32 = TAU * rng.gen::<f32>();
-                let beta: f32 = TAU * rng.gen::<f32>();
-                let gamma: f32 = TAU * rng.gen::<f32>();
+                let alpha: f64 = TAU * rng.gen::<f64>();
+                let beta: f64 = TAU * rng.gen::<f64>();
+                let gamma: f64 = TAU * rng.gen::<f64>();
                 Gate::U(op, alpha, beta, gamma)
             },
             Self::H => Gate::H(op),
@@ -314,8 +314,8 @@ impl GateToken<Gate> for G1 {
             Self::Z => Gate::Z(op),
             Self::S => Gate::S(op),
             Self::SInv => Gate::SInv(op),
-            Self::XRot => Gate::XRot(op, TAU * rng.gen::<f32>()),
-            Self::ZRot => Gate::ZRot(op, TAU * rng.gen::<f32>()),
+            Self::XRot => Gate::XRot(op, TAU * rng.gen::<f64>()),
+            Self::ZRot => Gate::ZRot(op, TAU * rng.gen::<f64>()),
         }
     }
 
@@ -366,14 +366,16 @@ impl GateToken<Gate> for G2 {
 /// This gate is equivalent to `Z(γ) × X(β) × Z(α)`.
 pub fn make_u<A>(alpha: A::Real, beta: A::Real, gamma: A::Real)
     -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     let b2 = beta / (A::Real::one() + A::Real::one());
     let ag = alpha + gamma;
     let prefactor = A::cis(b2);
-    let ondiag0 = A::from_real(b2.cos());
+    let ondiag0 = A::from_re(b2.cos());
     let ondiag1 = A::cis(ag) * ondiag0;
-    let offdiag = A::from_real(b2.sin());
+    let offdiag = A::from_re(b2.sin());
     let offdiag0 = -A::i() * A::cis(gamma) * offdiag;
     let offdiag1 = -A::i() * A::cis(alpha) * offdiag;
     nd::array![
@@ -385,26 +387,30 @@ where A: ComplexFloat + ComplexFloatExt
 /// Make a Hadamard gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`HMAT`] instead.
+/// [`Complex64`][C64]-valued [`HMAT`] instead.
 pub(crate) fn make_h<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
-    let h = A::from_real((A::Real::one() + A::Real::one()).recip().sqrt());
+    let h = A::from_re((A::Real::one() + A::Real::one()).recip().sqrt());
     nd::array![
         [h,  h],
         [h, -h],
     ]
 }
 
-/// Lazy-static version of [`make_h`] for a [`Complex32`][C32] element type.
-pub(crate) static HMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_h);
+/// Lazy-static version of [`make_h`] for a [`Complex64`][C64] element type.
+pub(crate) static HMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_h);
 
 /// Make an X gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`XMAT`] instead.
+/// [`Complex64`][C64]-valued [`XMAT`] instead.
 pub(crate) fn make_x<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(), A::zero()],
@@ -412,15 +418,17 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_x`] for a [`Complex32`][C32] element type.
-pub(crate) static XMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_x);
+/// Lazy-static version of [`make_x`] for a [`Complex64`][C64] element type.
+pub(crate) static XMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_x);
 
 /// Make a Z gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`ZMAT`] instead.
+/// [`Complex64`][C64]-valued [`ZMAT`] instead.
 pub(crate) fn make_z<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(),   A::zero()],
@@ -428,15 +436,17 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_z`] for a [`Complex32`][C32] element type.
-pub(crate) static ZMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_z);
+/// Lazy-static version of [`make_z`] for a [`Complex64`][C64] element type.
+pub(crate) static ZMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_z);
 
 /// Make an S gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`SMAT`] instead.
+/// [`Complex64`][C64]-valued [`SMAT`] instead.
 pub(crate) fn make_s<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(),  A::zero()],
@@ -444,15 +454,17 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_s`] for a [`Complex32`][C32] element type.
-pub(crate) static SMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_s);
+/// Lazy-static version of [`make_s`] for a [`Complex64`][C64] element type.
+pub(crate) static SMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_s);
 
 /// Make an S<sup>†</sup> gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`SINVMAT`] instead.
+/// [`Complex64`][C64]-valued [`SINVMAT`] instead.
 pub(crate) fn make_sinv<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(),   A::zero()],
@@ -460,17 +472,19 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_sinv`] for a [`Complex32`][C32] element type.
-pub(crate) static SINVMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_sinv);
+/// Lazy-static version of [`make_sinv`] for a [`Complex64`][C64] element type.
+pub(crate) static SINVMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_sinv);
 
 /// Make an X-rotation gate.
 pub(crate) fn make_xrot<A>(angle: A::Real) -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     let ang2 = angle / (A::Real::one() + A::Real::one());
     let prefactor = A::cis(ang2);
-    let ondiag = A::from_real(ang2.cos());
-    let offdiag = -A::i() * A::from_real(ang2.sin());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
     nd::array![
         [prefactor * ondiag,  prefactor * offdiag],
         [prefactor * offdiag, prefactor * ondiag ],
@@ -479,7 +493,9 @@ where A: ComplexFloat + ComplexFloatExt
 
 /// Make a Z-rotation gate.
 pub(crate) fn make_zrot<A>(angle: A::Real) -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     let ph = A::cis(angle);
     nd::array![
@@ -491,9 +507,11 @@ where A: ComplexFloat + ComplexFloatExt
 /// Make a CX gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`CXMAT`] instead.
+/// [`Complex64`][C64]-valued [`CXMAT`] instead.
 pub(crate) fn make_cx<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(),  A::zero(), A::zero(), A::zero()],
@@ -503,28 +521,32 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_cx`] for a [`Complex32`][C32] element type.
-pub(crate) static CXMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_cx);
+/// Lazy-static version of [`make_cx`] for a [`Complex64`][C64] element type.
+pub(crate) static CXMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_cx);
 
 /// Make a CX gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`CXTENS`] instead.
+/// [`Complex64`][C64]-valued [`CXTENS`] instead.
 pub(crate) fn make_cx2<A>() -> nd::Array4<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     make_cx().into_shape((2, 2, 2, 2)).unwrap()
 }
 
-/// Lazy-static version of [`make_cx2`] for a [`Complex32`][C32] element type.
-pub(crate) static CXTENS: Lazy<nd::Array4<C32>> = Lazy::new(make_cx2);
+/// Lazy-static version of [`make_cx2`] for a [`Complex64`][C64] element type.
+pub(crate) static CXTENS: Lazy<nd::Array4<C64>> = Lazy::new(make_cx2);
 
 /// Make a CX gate with the control and target qubits reversed.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`CXREVMAT`] instead.
+/// [`Complex64`][C64]-valued [`CXREVMAT`] instead.
 pub(crate) fn make_cxrev<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(),  A::zero(), A::zero(), A::zero()],
@@ -534,29 +556,33 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_cxrev`] for a [`Complex32`][C32] element type.
-pub(crate) static CXREVMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_cxrev);
+/// Lazy-static version of [`make_cxrev`] for a [`Complex64`][C64] element type.
+pub(crate) static CXREVMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_cxrev);
 
 /// Make a CX gate with the control and target qubits reversed.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`CXREVTENS`] instead.
+/// [`Complex64`][C64]-valued [`CXREVTENS`] instead.
 pub(crate) fn make_cxrev2<A>() -> nd::Array4<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     make_cxrev().into_shape((2, 2, 2, 2)).unwrap()
 }
 
-/// Lazy-static version of [`make_cxrev2`] for a [`Complex32`][C32] element
+/// Lazy-static version of [`make_cxrev2`] for a [`Complex64`][C64] element
 /// type.
-pub(crate) static CXREVTENS: Lazy<nd::Array4<C32>> = Lazy::new(make_cxrev2);
+pub(crate) static CXREVTENS: Lazy<nd::Array4<C64>> = Lazy::new(make_cxrev2);
 
 /// Make a CZ gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`CZMAT`] instead.
+/// [`Complex64`][C64]-valued [`CZMAT`] instead.
 pub(crate) fn make_cz<A>() -> nd::Array2<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     nd::array![
         [A::one(),  A::zero(), A::zero(),  A::zero()],
@@ -566,19 +592,21 @@ where A: ComplexFloat + ComplexFloatExt
     ]
 }
 
-/// Lazy-static version of [`make_cz`] for a [`Complex32`][C32] element type.
-pub(crate) static CZMAT: Lazy<nd::Array2<C32>> = Lazy::new(make_cz);
+/// Lazy-static version of [`make_cz`] for a [`Complex64`][C64] element type.
+pub(crate) static CZMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_cz);
 
 /// Make a CZ gate.
 ///
 /// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex32`][C32]-valued [`CZTENS`] instead.
+/// [`Complex64`][C64]-valued [`CZTENS`] instead.
 pub(crate) fn make_cz2<A>() -> nd::Array4<A>
-where A: ComplexFloat + ComplexFloatExt
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     make_cz().into_shape((2, 2, 2, 2)).unwrap()
 }
 
-/// Lazy-static version of [`make_cz2`] for a [`Complex32`][C32] element type.
-pub(crate) static CZTENS: Lazy<nd::Array4<C32>> = Lazy::new(make_cz2);
+/// Lazy-static version of [`make_cz2`] for a [`Complex64`][C64] element type.
+pub(crate) static CZTENS: Lazy<nd::Array4<C64>> = Lazy::new(make_cz2);
 

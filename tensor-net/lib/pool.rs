@@ -1,23 +1,20 @@
 //! Simple thread pool for processing batches of tensor contractions.
 
-use std::{
-    iter::Sum,
-    ops::Mul,
-    thread,
-};
+use std::{ ops::Mul, thread };
 use crossbeam::channel;
+use ndarray as nd;
 use thiserror::Error;
 use crate::tensor::{ Tensor, Idx };
 
 #[derive(Debug, Error)]
 pub enum PoolError {
-    #[error("failed to enqueue contractions: closed thread")]
-    ClosedThread,
+    #[error("failed to enqueue contractions: dead thread")]
+    DeadThread,
 
     #[error("failed to enqueue contractions: closed sender channel")]
     ClosedSenderChannel,
 
-    #[error("failed to receive contraction result: receiver error: {0} ")]
+    #[error("failed to receive contraction result: receiver error: {0}")]
     ClosedReceiverChannel(channel::RecvError),
 
     #[error("encountered receiver error from within a thread: receiver error: {0}")]
@@ -57,7 +54,7 @@ pub struct ContractorPool<T, A> {
 impl<T, A> ContractorPool<T, A>
 where
     T: Idx + Send + 'static,
-    A: Clone + Mul<Output = A> + Sum + Send + 'static,
+    A: Mul<A, Output = A> + nd::LinalgScalar + Send + 'static,
 {
     /// Create a new thread pool of `nthreads` threads.
     pub fn new(nthreads: usize) -> Self {
@@ -107,7 +104,7 @@ where
     where I: IntoIterator<Item = (Tensor<T, A>, Tensor<T, A>)>
     {
         if self.threads.iter().any(|th| th.is_finished()) {
-            return Err(ClosedThread);
+            return Err(DeadThread);
         }
         let mut count: usize = 0;
         for (t_a, t_b) in pairs.into_iter() {

@@ -11,11 +11,15 @@ pub mod network;
 pub mod pool;
 
 pub mod mps;
+pub mod mps2;
+pub mod lazymps;
 pub mod gate;
 pub mod circuit;
 
 /// Extension trait for [`ComplexFloat`].
-pub trait ComplexFloatExt: ComplexFloat {
+pub trait ComplexFloatExt: ComplexFloat /*+ std::fmt::Debug*/
+/*where <Self as ComplexFloat>::Real: std::fmt::Debug*/
+{
     // /// The imaginary unit, *i*.
     // const I: Self;
     //
@@ -32,7 +36,7 @@ pub trait ComplexFloatExt: ComplexFloat {
     ///
     /// Should adhere to the usual relationship between ordinary complex and
     /// real numbers.
-    fn from_real(x: Self::Real) -> Self;
+    fn from_re(x: Self::Real) -> Self;
 
     /// Create a new value of unit magnitude with a given phase angle.
     fn cis(angle: Self::Real) -> Self;
@@ -47,7 +51,7 @@ pub trait ComplexFloatExt: ComplexFloat {
 impl<T> ComplexFloatExt for Complex<T>
 where
     Complex<T>: ComplexFloat<Real = T>,
-    T: Zero + Float,
+    T: Zero + Float /*+ std::fmt::Debug*/,
 {
     // const I: Self = Complex::<T>::I;
     // const ZERO: Self = Complex::<T>::ZERO;
@@ -55,7 +59,7 @@ where
 
     fn i() -> Self { Complex::i() }
 
-    fn from_real(x: Self::Real) -> Self {
+    fn from_re(x: Self::Real) -> Self {
         Self { re: x, im: <Self::Real as Zero>::zero() }
     }
 
