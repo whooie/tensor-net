@@ -1,6 +1,5 @@
 # tensor-net
 
-This is a naive implementation of tensors and tensor networks, mostly for
-learning purposes. No optimizations (e.g. parallelization, GPU) have (yet) been
-implemented.
+Tensor networks/matrix product states for simulating measurement-induced phase
+transitions in *N*-qubit systems with non-stabilizer states.
 
