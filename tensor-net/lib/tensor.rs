@@ -627,7 +627,7 @@ where T: Idx
                 = idxs_a.into_iter().take(n_idx_a - n_common)
                 .chain(idxs_b.into_iter().skip(n_common))
                 .collect();
-            let c = c.into_shape(new_shape).unwrap().into_dyn();
+            let c = c.into_shape(new_shape).unwrap();
             TensorData::Tensor(new_idxs, c)
         }
 

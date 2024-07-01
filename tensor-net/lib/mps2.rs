@@ -131,6 +131,11 @@ pub enum MPSError {
     #[error("error in MPS creation: cannot create for an empty system")]
     EmptySystem,
 
+    /// Returned when attempting to create a new MPS with an invalid quantum
+    /// number.
+    #[error("error in MPS creation: invalid quantum number")]
+    InvalidQuantumNumber,
+
     /// Returned when attempting to create a new MPS for a state with a
     /// zero-dimensional physical index.
     #[error("error in MPS creation: unphysical zero-dimensional physical index")]
@@ -301,6 +306,44 @@ where
         let svals: Vec<nd::Array1<A::Real>>
             = (0..n - 1)
             .map(|_| nd::array![A::Real::one()])
+            .collect();
+        Ok(Self { n, data, outs: indices, svals, eps })
+    }
+
+    /// Initialize to a separable product state with each particle wholly in one
+    /// of its available eigenstates.
+    ///
+    /// Optionally provide a global cutoff threshold for singular values, which
+    /// defaults to zero.
+    ///
+    /// Fails if no physical indices are provided or the given quantum number
+    /// for an index exceeds the available range defined by the index's [`Idx`]
+    /// implementation.
+    pub fn new_qnums<I>(indices: I, eps: Option<A::Real>) -> MPSResult<Self>
+    where I: IntoIterator<Item = (T, usize)>
+    {
+        let indices: Vec<(T, usize)> = indices.into_iter().collect();
+        if indices.is_empty() { return Err(EmptySystem); }
+        if indices.iter().any(|(idx, qnum)| *qnum >= idx.dim()) {
+            return Err(InvalidQuantumNumber);
+        }
+        let eps = Float::abs(eps.unwrap_or_else(A::Real::zero));
+        let n = indices.len();
+        let data: Vec<nd::Array3<A>>
+            = indices.iter()
+            .map(|(idx, qnum)| {
+                let mut g: nd::Array3<A> = nd::Array::zeros((1, idx.dim(), 1));
+                g[[0, *qnum, 0]] = A::one();
+                g
+            })
+            .collect();
+        let svals: Vec<nd::Array1<A::Real>>
+            = (0..n - 1)
+            .map(|_| nd::array![A::Real::one()])
+            .collect();
+        let indices: Vec<T>
+            = indices.into_iter()
+            .map(|(idx, _)| idx)
             .collect();
         Ok(Self { n, data, outs: indices, svals, eps })
     }
@@ -762,6 +805,14 @@ where
     fn refactor_rlsweep(&mut self) {
         for k in (0..self.n - 1).rev() { self.local_refactor(k); }
     }
+
+    // apply a full bidirectional sweep of the MPS, avoiding the double-refactor
+    // of the last bond
+    #[inline]
+    fn refactor_sweep(&mut self) {
+        for k in  0..self.n - 1        { self.local_refactor(k); }
+        for k in (0..self.n - 2).rev() { self.local_refactor(k); }
+    }
 }
 
 impl<T, A> MPS<T, A>
@@ -1208,12 +1259,12 @@ where
     /// index value of the (randomized) outcome state for that particle.
     ///
     /// If `k` is out of bounds, do nothing and return `None`.
-    ///
-    /// **Note**: This operation requires contracting the state and then
-    /// performing a refactor on each bond in the MPS after applying the
-    /// projective measurement. If multiple measurements are required, consider
-    /// using [`Self::measure_multi`], which only contracts and refactors bonds
-    /// once.
+    // ///
+    // /// **Note**: This operation requires contracting the state and then
+    // /// performing a refactor on each bond in the MPS after applying the
+    // /// projective measurement. If multiple measurements are required, consider
+    // /// using [`Self::measure_multi`], which only contracts and refactors bonds
+    // /// once.
     #[inline]
     pub fn measure<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
     where R: Rng + ?Sized
@@ -1222,62 +1273,64 @@ where
         let (p, prob) = self.sample_state(k, rng);
         let renorm = A::from_re(Float::sqrt(prob));
         self.project(k, p, renorm);
-        self.refactor_lrsweep();
+        // self.refactor_lrsweep();
         // self.refactor_rlsweep();
+        self.refactor_sweep();
         Some(p)
     }
 
-    /// Perform a batched series of projective measurements on selected
-    /// particles, reporting the index values of each (randomized) outcome
-    /// states for those particles. Projections are performed and outcomes
-    /// reported in the order the particle indices are seen.
-    ///
-    /// If any particle index is out of bounds, no projection is performed and
-    /// its outcome is omitted.
-    #[inline]
-    pub fn measure_multi<I, R>(&mut self, particles: I, rng: &mut R)
-        -> Vec<usize>
-    where
-        I: IntoIterator<Item = usize>,
-        R: Rng + ?Sized,
-    {
-        let n = self.n;
-        let mut particles: Vec<usize>
-            = particles.into_iter().filter(|k| *k < n).collect();
-        if particles.is_empty() { return particles; }
-
-        let re_zero = <A as ComplexFloat>::Real::zero();
-        let mut probs: nd::ArrayD<<A as ComplexFloat>::Real>
-            = self.contract_nd()
-            .mapv(|a| (a * a.conj()).re());
-        particles.iter_mut()
-            .for_each(|k| {
-                let r: <A as ComplexFloat>::Real = rng.gen();
-                let (p, prob)
-                    = probs.axis_iter(nd::Axis(*k))
-                    .map(|slice| slice.sum())
-                    .scan(re_zero, |cu, pr| { *cu = *cu + pr; Some((*cu, pr)) })
-                    .enumerate()
-                    .find_map(|(j, (cu, pr))| (r < cu).then_some((j, pr)))
-                    .unwrap();
-                let renorm = A::from_re(Float::sqrt(prob));
-
-                self.project(*k, p, renorm);
-                probs.axis_iter_mut(nd::Axis(*k))
-                    .enumerate()
-                    .for_each(|(j, mut slice)| {
-                        if j == p {
-                            slice.map_inplace(|pr| { *pr = *pr / prob; });
-                        } else {
-                            slice.fill(re_zero);
-                        }
-                    });
-                *k = p;
-            });
-        self.refactor_lrsweep();
-        // self.refactor_rlsweep();
-        particles
-    }
+    // /// Perform a batched series of projective measurements on selected
+    // /// particles, reporting the index values of each (randomized) outcome
+    // /// states for those particles. Projections are performed and outcomes
+    // /// reported in the order the particle indices are seen.
+    // ///
+    // /// If any particle index is out of bounds, no projection is performed and
+    // /// its outcome is omitted.
+    // #[inline]
+    // pub fn measure_multi<I, R>(&mut self, particles: I, rng: &mut R)
+    //     -> Vec<usize>
+    // where
+    //     I: IntoIterator<Item = usize>,
+    //     R: Rng + ?Sized,
+    // {
+    //     let n = self.n;
+    //     let mut particles: Vec<usize>
+    //         = particles.into_iter().filter(|k| *k < n).collect();
+    //     if particles.is_empty() { return particles; }
+    //
+    //     let re_zero = <A as ComplexFloat>::Real::zero();
+    //     let mut probs: nd::ArrayD<<A as ComplexFloat>::Real>
+    //         = self.contract_nd()
+    //         .mapv(|a| (a * a.conj()).re());
+    //     particles.iter_mut()
+    //         .for_each(|k| {
+    //             let r: <A as ComplexFloat>::Real = rng.gen();
+    //             let (p, prob)
+    //                 = probs.axis_iter(nd::Axis(*k))
+    //                 .map(|slice| slice.sum())
+    //                 .scan(re_zero, |cu, pr| { *cu = *cu + pr; Some((*cu, pr)) })
+    //                 .enumerate()
+    //                 .find_map(|(j, (cu, pr))| (r < cu).then_some((j, pr)))
+    //                 .unwrap();
+    //             let renorm = A::from_re(Float::sqrt(prob));
+    //
+    //             self.project(*k, p, renorm);
+    //             probs.axis_iter_mut(nd::Axis(*k))
+    //                 .enumerate()
+    //                 .for_each(|(j, mut slice)| {
+    //                     if j == p {
+    //                         slice.map_inplace(|pr| { *pr = *pr / prob; });
+    //                     } else {
+    //                         slice.fill(re_zero);
+    //                     }
+    //                 });
+    //             *k = p;
+    //         });
+    //     self.refactor_sweep();
+    //     // self.refactor_lrsweep();
+    //     // self.refactor_rlsweep();
+    //     particles
+    // }
 }
 
 impl<T, A> MPS<T, A>

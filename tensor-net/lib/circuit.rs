@@ -9,7 +9,7 @@ use rustc_hash::FxHashSet as HashSet;
 use num_complex::Complex64 as C64;
 use crate::{
     gate::{ GateToken, Gate, G1, G2 },
-    mps::MPS,
+    mps2::MPS,
     tensor::Idx,
 };
 
@@ -283,7 +283,7 @@ impl MPSCircuit {
                                     .map(Outcome::from)
                             } else {
                                 None
-                            }
+                            };
                         },
                         Pred::Func(f) => {
                             *outk = if f(k) {
@@ -291,10 +291,29 @@ impl MPSCircuit {
                                     .map(Outcome::from)
                             } else {
                                 None
-                            }
+                            };
                         },
                     }
                 });
+
+            // buf.fill(None);
+            // let to_measure: Vec<usize>
+            //     = (0..buf.len())
+            //     .filter(|k| {
+            //         match &pred {
+            //             Pred::Never => false,
+            //             Pred::Always => true,
+            //             Pred::Prob(p) => circ.rng.gen::<f64>() < *p,
+            //             Pred::Func(f) => f(*k),
+            //         }
+            //     })
+            //     .collect();
+            // let outcomes: Vec<usize>
+            //     = circ.state.measure_multi(
+            //         to_measure.iter().copied(), &mut circ.rng);
+            // to_measure.into_iter()
+            //     .zip(outcomes)
+            //     .for_each(|(k, outk)| { buf[k] = Some(Outcome::from(outk)); });
         }
 
         let MeasureConfig { layer, prob } = config;
