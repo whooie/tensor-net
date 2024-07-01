@@ -2,4 +2,7 @@
 **.png
 **.svg
 **.pdf
+**.npz
+**.npy
 tensor-net/examples/*
+**/__pycache__/*

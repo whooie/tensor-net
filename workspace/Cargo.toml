@@ -1,0 +1,34 @@
+[package]
+name = "workspace"
+version = "0.1.0"
+authors = [ "whooie <wcwhuie@gmail.com>",]
+edition = "2021"
+
+[dependencies]
+# anyhow = "*"
+# thiserror = "*"
+itertools = "0.13.0"
+ndarray = { version = "0.15.6", features = [ "default", "rayon",] }
+rayon = "1.10.0"
+tensor-net = { path = "../tensor-net", version = "*" }
+
+[dependencies.whooie]
+git = "https://gitlab.com/whooie/rust-lib.git"
+version = "*"
+features = [ "ndarray-utils",]
+
+[lib]
+path = "lib/lib.rs"
+name = "lib"
+
+[[bin]]
+path = "src/entropy.rs"
+name = "entropy"
+
+[[bin]]
+path = "src/phase_transition.rs"
+name = "phase_transition"
+
+[profile.release]
+lto = true
+panic = "abort"
