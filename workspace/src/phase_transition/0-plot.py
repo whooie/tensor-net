@@ -5,7 +5,11 @@ import numpy as np
 import whooie.pyplotdefs as pd
 
 outdir = Path("output")
-infile = outdir.joinpath("phase_transition.npz")
+# infile = outdir.joinpath("phase_transition.npz")
+# infile = outdir.joinpath("phase_transition_p_meas=0.07..0.15_size=5..17.npz")
+# infile = outdir.joinpath("phase_transition_p_meas=0.12..0.20_size=4..22.npz")
+infile = outdir.joinpath("phase_transition_p_meas=0.10..0.20_size=4..20.npz")
+# infile = outdir.joinpath("phase_transition_p_meas=0.10..0.20_size=5..19.npz")
 
 data = np.load(str(infile))
 p_meas = data["p_meas"]
@@ -140,7 +144,14 @@ for (k, (p_k, mean_k, std_p_k, std_m_k)) in it:
 (
     P
     .ggrid()
-    .legend(fontsize="xx-small")
+    .legend(fontsize=4.0)
+    .legend(
+        frameon=False,
+        loc="upper left",
+        bbox_to_anchor=(1.0, 1.0),
+        fontsize="xx-small",
+        framealpha=1.0,
+    )
     .set_xlabel("System size")
     .set_ylabel("Entanglement entropy")
     .savefig(outdir.joinpath("phase_transition.png"))
@@ -170,5 +181,5 @@ for (k, (p_k, mean_k, std_p_k, std_m_k)) in it:
     .savefig(outdir.joinpath("phase_transition_correlations.png"))
 )
 
-pd.show()
+# pd.show()
 
