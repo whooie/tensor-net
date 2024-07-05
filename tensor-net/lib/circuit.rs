@@ -9,7 +9,7 @@ use rustc_hash::FxHashSet as HashSet;
 use num_complex::Complex64 as C64;
 use crate::{
     gate::{ self, GateToken, Gate, G1, G2 },
-    mps2::MPS,
+    mps::MPS,
     tensor::Idx,
 };
 

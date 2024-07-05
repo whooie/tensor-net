@@ -86,11 +86,8 @@
 //! let outcome = mps.measure(0, &mut rng).unwrap();
 //! println!("measured qubit 0 as ∣{outcome}⟩");
 //!
-//! // contract the MPS into a single tensor, which can then be flattened into a
-//! // normal 1D state vector
-//! let mut tens = mps.into_tensor();
-//! tens.sort_indices(); // make sure all the qubits are in the right order
-//! let (_, state) = tens.into_flat();
+//! // contract the MPS into an ordinary 1D state vector
+//! let (_, state) = mps.into_contract();
 //! println!("{state}");
 //! // either [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 //! // or     [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
@@ -100,10 +97,9 @@
 use std::{
     cmp::Ordering,
     fmt,
-    iter::Sum,
     ops::{ Add, Range },
 };
-use itertools::Itertools;
+// use itertools::Itertools;
 use ndarray as nd;
 use ndarray_linalg::{
     Eigh,
@@ -135,6 +131,16 @@ pub enum MPSError {
     #[error("error in MPS creation: cannot create for an empty system")]
     EmptySystem,
 
+    /// Returned when attempting to create a new MPS with an invalid quantum
+    /// number.
+    #[error("error in MPS creation: invalid quantum number")]
+    InvalidQuantumNumber,
+
+    /// Returned when attempting to create a new MPS for a state with a
+    /// zero-dimensional physical index.
+    #[error("error in MPS creation: unphysical zero-dimensional physical index")]
+    UnphysicalIndex,
+
     /// Returned when attempting to create a new MPS from data with a
     /// length/shape that doesn't match the provided indices.
     #[error("error in MPS creation: array length/shape doesn't match indices")]
@@ -148,11 +154,74 @@ pub enum MPSError {
 use MPSError::*;
 pub type MPSResult<T> = Result<T, MPSError>;
 
+/// Data struct holding a Schmidt decomposition repurposed for MPS
+/// factorization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schmidt<A: Scalar> {
+    /// Matrix whose columns are the left Schmidt vectors.
+    pub u: nd::Array2<A>,
+    /// Vector of Schmidt values.
+    pub s: nd::Array1<A::Real>,
+    /// Matrix whose rows are the right Schmidt vectors, scaled by their
+    /// respective Schmidt values.
+    pub q: nd::Array2<A>,
+    /// Schmidt rank.
+    pub rank: usize,
+}
+
+/// Succinctly names a complex-valued 2D array that can be factorized via
+/// Schmidt/singular value decomposition.
+pub trait SchmidtDecomp<A: Scalar>:
+    SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<<A as Scalar>::Real>, VT = nd::Array2<A>>
+{
+    /// Return the Schmidt decomposition of `self`, with each of the right
+    /// Schmidt vectors multiplied by their respective singular values.
+    fn local_decomp(self, eps: A::Real) -> Schmidt<A>;
+}
+
+impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
+    fn local_decomp(self, eps: A::Real) -> Schmidt<A> {
+        let (Some(u), mut s, Some(mut q)) = self.svd_into(true, true).unwrap()
+            else { unreachable!() };
+        let mut norm: A::Real
+            = Float::sqrt(
+                s.iter()
+                    .map(|sj| Float::powi(*sj, 2))
+                    .fold(A::Real::zero(), A::Real::add)
+            );
+        s.map_inplace(|sj| { *sj /= norm; });
+        let rank
+            = s.iter()
+            .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
+            .count()
+            .max(1);
+        let rankslice = nd::Slice::new(0, Some(rank as isize), 1);
+        s.slice_axis_inplace(nd::Axis(0), rankslice);
+        norm
+            = Float::sqrt(
+                s.iter()
+                    .map(|sj| Float::powi(*sj, 2))
+                    .fold(A::Real::zero(), A::Real::add)
+            );
+        s.map_inplace(|sj| { *sj /= norm; });
+        q.slice_axis_inplace(nd::Axis(0), rankslice);
+        let renorm = A::from_real(norm);
+        nd::Zip::from(q.axis_iter_mut(nd::Axis(0)))
+            .and(&s)
+            .for_each(|mut qv, sv| {
+                let sv_renorm = A::from_real(*sv) * renorm;
+                qv.map_inplace(|qvj| { *qvj *= sv_renorm });
+            });
+        let u = u.slice(nd::s![.., ..rank]).to_owned();
+        Schmidt { u, s, q, rank }
+    }
+}
+
 /// A matrix product (pure) state.
 ///
 /// This is a specific case of a [`Network<T, A>`][crate::network::Network],
-/// where tensors are arranged in a 1D chain with closed boundaries, and have
-/// one physical index each.
+/// where tensors are arranged in a 1D chain with open boundaries, and have one
+/// physical index each.
 ///
 /// The MPS is maintained in a so-called "canonical" factorization based on the
 /// Schmidt decomposition. The Schmidt values are readily available at any given
@@ -183,11 +252,9 @@ pub type MPSResult<T> = Result<T, MPSError>;
 /// ```
 ///
 /// > **Note**: If the MPS will ever be converted to a [`Tensor`] or
-/// > [`Network`], or used to compute a density matrix (including for
-/// > calculation of the Rényi entropy via [`Self::entropy_ry`] /
-/// > [`Self::entropy_ry_par`]), then all physical indices need to be
-/// > distinguishable. See [`Idx`] for more information.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// > [`Network`], then all physical indices need to be distinguishable. See
+/// > [`Idx`] for more information.
+#[derive(Clone, PartialEq, Eq)]
 pub struct MPS<T, A>
 where A: ComplexFloat
 {
@@ -202,8 +269,8 @@ where A: ComplexFloat
     // Physical indices.
     pub(crate) outs: Vec<T>, // length n
     // Singular values. When contracting with `data` tensors, use
-    // `ComplexFloat + ComplexFloatExt::from_re`.
-    pub(crate) svals: Vec<Vec<A::Real>>, // length n - 1
+    // `ComplexFloatExt::from_real`.
+    pub(crate) svals: Vec<nd::Array1<A::Real>>, // length n - 1
     // Threshold for singular values.
     pub(crate) eps: A::Real,
 }
@@ -211,25 +278,22 @@ where A: ComplexFloat
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
-    nd::Array2<A>: SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<A::Real>, VT = nd::Array2<A>>,
+    A: ComplexFloat,
 {
     /// Initialize to a separable product state with each particle in the first
     /// of its available eigenstates.
     ///
     /// Optionally provide a global cutoff threshold for singular values, which
-    /// defaults to the square of machine epsilon.
+    /// defaults to zero.
     ///
-    /// Fails if no particle indices are provided.
-    #[inline]
+    /// Fails if no physical indices are provided.
     pub fn new<I>(indices: I, eps: Option<A::Real>) -> MPSResult<Self>
     where I: IntoIterator<Item = T>
     {
-        let eps = Float::abs(
-            eps.unwrap_or_else(|| Float::powi(A::Real::epsilon(), 2)));
         let indices: Vec<T> = indices.into_iter().collect();
         if indices.is_empty() { return Err(EmptySystem); }
+        if indices.iter().any(|i| i.dim() == 0) { return Err(UnphysicalIndex); }
+        let eps = Float::abs(eps.unwrap_or_else(A::Real::zero));
         let n = indices.len();
         let data: Vec<nd::Array3<A>>
             = indices.iter()
@@ -239,295 +303,515 @@ where
                 g
             })
             .collect();
-        let svals: Vec<Vec<A::Real>>
+        let svals: Vec<nd::Array1<A::Real>>
             = (0..n - 1)
-            .map(|_| vec![A::Real::one()])
+            .map(|_| nd::array![A::Real::one()])
             .collect();
         Ok(Self { n, data, outs: indices, svals, eps })
     }
 
-    /// Initialize by factoring an existing pure state vector.
+    /// Initialize to a separable product state with each particle wholly in one
+    /// of its available eigenstates.
     ///
     /// Optionally provide a global cutoff threshold for singular values, which
-    /// defaults to the square of machine epsilon.
+    /// defaults to zero.
     ///
-    /// Fails if no particle indices are provided or the initial state vector
-    /// does not have length Π<sub>*k*</sub> *D*<sub>*k*</sub>, where
-    /// *D*<sub>*k*</sub> is the dimension of the *k*-th index.
-    #[inline]
-    pub fn from_vector<I, J>(indices: I, state: J, eps: Option<A::Real>)
-        -> MPSResult<Self>
-    where
-        I: IntoIterator<Item = T>,
-        J: IntoIterator<Item = A>,
+    /// Fails if no physical indices are provided or the given quantum number
+    /// for an index exceeds the available range defined by the index's [`Idx`]
+    /// implementation.
+    pub fn new_qnums<I>(indices: I, eps: Option<A::Real>) -> MPSResult<Self>
+    where I: IntoIterator<Item = (T, usize)>
     {
-        let eps = Float::abs(
-            eps.unwrap_or_else(|| Float::powi(A::Real::epsilon(), 2)));
-        let indices: Vec<T> = indices.into_iter().collect();
+        let indices: Vec<(T, usize)> = indices.into_iter().collect();
         if indices.is_empty() { return Err(EmptySystem); }
-        let statelen: usize = indices.iter().map(|idx| idx.dim()).product();
-        let mut state: nd::Array1<A> = state.into_iter().collect();
-        if state.len() != statelen { return Err(StateIncompatibleShape); }
-        let norm
-            = state.iter()
-            .map(|a| *a * a.conj())
-            .fold(A::zero(), |acc, a| acc + a)
-            .sqrt();
-        state.iter_mut().for_each(|a| { *a = *a / norm; });
-        let n = indices.len();
-        if n == 1 {
-            let mut g: nd::Array3<A>
-                = nd::Array::zeros((1, indices[0].dim(), 1));
-            state.move_into(g.slice_mut(nd::s![0, .., 0]));
-            let data: Vec<nd::Array3<A>> = vec![g];
-            let svals: Vec<Vec<A::Real>> = Vec::with_capacity(0);
-            Ok(Self { n, data, outs: indices, svals, eps })
-        } else {
-            Ok(Self::do_from_vector(indices, state, eps))
+        if indices.iter().any(|(idx, qnum)| *qnum >= idx.dim()) {
+            return Err(InvalidQuantumNumber);
         }
+        let eps = Float::abs(eps.unwrap_or_else(A::Real::zero));
+        let n = indices.len();
+        let data: Vec<nd::Array3<A>>
+            = indices.iter()
+            .map(|(idx, qnum)| {
+                let mut g: nd::Array3<A> = nd::Array::zeros((1, idx.dim(), 1));
+                g[[0, *qnum, 0]] = A::one();
+                g
+            })
+            .collect();
+        let svals: Vec<nd::Array1<A::Real>>
+            = (0..n - 1)
+            .map(|_| nd::array![A::Real::one()])
+            .collect();
+        let indices: Vec<T>
+            = indices.into_iter()
+            .map(|(idx, _)| idx)
+            .collect();
+        Ok(Self { n, data, outs: indices, svals, eps })
     }
+}
 
-    fn do_from_vector(outs: Vec<T>, state: nd::Array1<A>, eps: A::Real) -> Self
+impl<T, A> MPS<T, A>
+where A: ComplexFloat
+{
+    /// Return the number of particles.
+    #[inline]
+    pub fn n(&self) -> usize { self.n }
+
+    /// Return a reference to all physical indices.
+    #[inline]
+    pub fn indices(&self) -> &Vec<T> { &self.outs }
+}
+
+impl<T, A> MPS<T, A>
+where
+    T: Idx,
+    A: ComplexFloat + Scalar<Real = <A as ComplexFloat>::Real>,
+    nd::Array2<A>: SchmidtDecomp<A>,
+{
+    fn factorize(outs: &[T], state: nd::Array1<A>, eps: <A as Scalar>::Real)
+        -> (Vec<nd::Array3<A>>, Vec<nd::Array1<<A as Scalar>::Real>>)
     {
-        let n = outs.len(); // assume n ≥ 2
+        let n = outs.len(); // assume n ≥ 1
         let mut data: Vec<nd::Array3<A>> = Vec::with_capacity(n);
-        let mut svals: Vec<Vec<A::Real>> = Vec::with_capacity(n - 1);
+        let mut svals: Vec<nd::Array1<<A as Scalar>::Real>>
+            = Vec::with_capacity(n - 1);
         let mut udim: usize = 1;
         let mut outdim: usize;
-        let statelen = state.len();
-        let mut s: Vec<A::Real>;
-        let mut norm: A::Real;
+        let mut statelen = state.len();
         let mut q: nd::Array2<A> = state.into_shape((1, statelen)).unwrap();
         let mut reshape_m: usize;
         let mut reshape_n: usize;
-        let mut rank: usize;
-        let mut rankslice: nd::Slice;
-        for (k, outk) in outs.iter().take(n - 1).enumerate() {
+        for outk in outs.iter().take(n - 1) {
             outdim = outk.dim();
 
             // initial reshape to fuse outk with the previous schmidt index
+            statelen = q.len();
             reshape_m = udim * outdim;
-            reshape_n = q.len() / reshape_m;
+            reshape_n = statelen / reshape_m;
             q = q.into_shape((reshape_m, reshape_n)).unwrap();
 
-            // SVD/Schmidt decomp: left vectors are columns in u, Schmidt values
+            // svd/schmidt decomp: left vectors are columns in u, schmidt values
             // are in s, and right vectors are rows in q
-            // this is done in place to avoid constructing a full-rank matrix
-            // for the right vectors since we want to truncate based on the
-            // Schmidt rank
-            let (Some(u), mut sig, Some(vh)) = q.svd_into(true, true).unwrap()
-                else { unreachable!() };
-            norm = Float::sqrt(
-                sig.iter()
-                    .map(|sj| Float::powi(*sj, 2))
-                    .fold(A::Real::zero(), A::Real::add)
-            );
-            sig.iter_mut().for_each(|sj| { *sj = *sj / norm; });
-            rank = sig.iter()
-                .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
-                .count()
-                .max(1);
-            s = sig.into_iter().take(rank).collect();
-            norm = Float::sqrt(
-                s.iter()
-                    .map(|sj| Float::powi(*sj, 2))
-                    .fold(A::Real::zero(), A::Real::add)
-            );
-            s.iter_mut()
-                .for_each(|sj| { *sj = *sj / norm });
-            rankslice = nd::Slice::new(0, Some(rank as isize), 1);
-            q = vh;
-            q.slice_axis_inplace(nd::Axis(0), rankslice);
-
-            // construct the Γ tensor from u; Γ_k = (Σ_k-1)^-1 . u
-            // can't slice u in place on the column index because it'd mean the
-            // remaining data won't be contiguous in memory; this would make the
-            // reshape fail
+            let Schmidt { u, s, q: qp, rank } = q.local_decomp(eps);
+            q = qp;
+            // prepare the Γ tensor from u; Γ_k = (s_{k-1})^-1 . u
+            // can't slice u in place on the column index because it would mean
+            // the remaining data won't be contiguous in memory; this would make
+            // the reshape fail
             let mut g
                 = u.slice(nd::s![.., ..rank]).to_owned()
                 .into_shape((udim, outdim, rank))
                 .unwrap();
             if let Some(slast) = svals.last() {
-                g.axis_iter_mut(nd::Axis(0))
-                    .zip(slast)
-                    .for_each(|(mut gv, sv)| {
-                        gv.map_inplace(|gvk| {
-                            *gvk = *gvk / A::from_re(*sv);
-                        });
+                nd::Zip::from(g.axis_iter_mut(nd::Axis(0)))
+                    .and(slast)
+                    .for_each(|mut gv, sv| {
+                        gv.map_inplace(|gvk| { *gvk /= A::from_real(*sv); });
                     });
             }
 
             // done for the particle
             data.push(g);
-            // if there are more SVDs remaining, prepare by recombining with the
-            // singular values; otherwise the final state of q is exactly Γ_n-1
-            if k < n - 2 { // if there are SVDs remaining, prepare
-                q.axis_iter_mut(nd::Axis(0))
-                    .zip(&s)
-                    .for_each(|(mut qv, sv)| {
-                        qv.map_inplace(|qvk| {
-                            *qvk = *qvk * A::from_re(*sv);
-                        });
-                    });
-            }
             svals.push(s);
             udim = rank;
         }
         // final Γ tensor
-        data.push(q.into_shape((udim, outs[n - 1].dim(), 1)).unwrap());
+        let mut g = q.into_shape((udim, outs[n - 1].dim(), 1)).unwrap();
+        nd::Zip::from(g.axis_iter_mut(nd::Axis(0)))
+            .and(&svals[n - 2])
+            .for_each(|mut gv, sv| {
+                gv.map_inplace(|gvk| { *gvk /= A::from_real(*sv); });
+            });
+        data.push(g);
 
-        Self { n, data, outs, svals, eps }
+        (data, svals)
     }
 
-    /// Initialize by factoring an existing tensor representing a pure state.
-    ///
-    /// Note the additional `Ord` bound on the index type, which is used to
-    /// ensure determinism in the MPS factorization.
+    /// Initialize by factoring an existing pure state vector.
     ///
     /// Optionally provide a global cutoff threshold for singular values, which
-    /// defaults to the square of machine epsilon.
+    /// defaults to zero.
     ///
-    /// Fails if no particle indices are provided.
-    #[inline]
-    pub fn from_tensor(mut state: Tensor<T, A>, eps: Option<A::Real>)
-        -> MPSResult<Self>
-    where T: Ord
+    /// Fails if no particle indices are provided or if the length of the
+    /// initial state vector does not agree with the indices.
+    pub fn from_vector<I, J>(
+        indices: I,
+        state: J,
+        eps: Option<<A as Scalar>::Real>,
+    ) -> MPSResult<Self>
+    where
+        I: IntoIterator<Item = T>,
+        J: IntoIterator<Item = A>,
     {
-        let eps = Float::abs(
-            eps.unwrap_or_else(|| Float::powi(A::Real::epsilon(), 2)));
-        state.sort_indices();
-        let (indices, mut state) = state.into_flat();
+        let eps = Float::abs(eps.unwrap_or_else(<A as Scalar>::Real::zero));
+        let indices: Vec<T> = indices.into_iter().collect();
         if indices.is_empty() { return Err(EmptySystem); }
-        let norm
-            = state.iter()
-            .map(|a| *a * a.conj())
-            .fold(A::zero(), |acc, a| acc + a)
-            .sqrt();
-        state.iter_mut().for_each(|a| { *a = *a / norm; });
+        if indices.iter().any(|i| i.dim() == 0) { return Err(UnphysicalIndex); }
+        let statelen: usize = indices.iter().map(|idx| idx.dim()).product();
+        let mut state: nd::Array1<A> = state.into_iter().collect();
+        if state.len() != statelen { return Err(StateIncompatibleShape); }
+        let norm = ComplexFloat::sqrt(
+            state.iter()
+                .map(|a| *a * a.conj())
+                .fold(A::zero(), A::add)
+        );
+        state.map_inplace(|a| { *a /= norm; });
         let n = indices.len();
         if n == 1 {
             let mut g: nd::Array3<A>
                 = nd::Array::zeros((1, indices[0].dim(), 1));
             state.move_into(g.slice_mut(nd::s![0, .., 0]));
             let data: Vec<nd::Array3<A>> = vec![g];
-            let svals: Vec<Vec<A::Real>> = Vec::with_capacity(0);
+            let svals: Vec<nd::Array1<<A as Scalar>::Real>>
+                = Vec::with_capacity(0);
             Ok(Self { n, data, outs: indices, svals, eps })
         } else {
-            Ok(Self::do_from_vector(indices, state, eps))
+            let (data, svals) = Self::factorize(&indices, state, eps);
+            Ok(Self { n, data, outs: indices, svals, eps })
         }
     }
-}
 
-impl<T, A> MPS<T, A>
-where
-    T: Idx,
-    A: ComplexFloat + 'static,
-{
-    /// Apply a unitary transformation to the `k`-th particle.
+    /// Initialize by factoring an existing tensor representing a pure state.
     ///
-    /// Does nothing if `k` is out of bounds. The arrangement of the elements of
-    /// `op` should correspond to the usual left-matrix-multiplication view of
-    /// operator application. `op` is not checked for unitarity.
+    /// Not the additional `Ord` bound on the index type, which is used to
+    /// ensure determinism in the MPS factorization.
     ///
-    /// Fails if `op` is not square with a dimension equal to that of the `k`-th
-    /// physical index.
-    #[inline]
-    pub fn apply_unitary1(&mut self, k: usize, op: &nd::Array2<A>)
-        -> MPSResult<&mut Self>
+    /// Optionally provide a global cutoff threshold for singular values, which
+    /// defaults to zero.
+    ///
+    /// Fails if no particle indices are provided.
+    pub fn from_tensor(
+        mut state: Tensor<T, A>,
+        eps: Option<<A as Scalar>::Real>,
+    ) -> MPSResult<Self>
+    where T: Ord
     {
-        if k >= self.n { return Ok(self); }
-        // println!("u1 {k}");
-        let dk = self.outs[k].dim();
-        if op.shape() != [dk, dk] { return Err(OperatorIncompatibleShape); }
-        self.data[k]
-            .axis_iter_mut(nd::Axis(0))
-                .for_each(|mut gkv| {
-                    gkv.axis_iter_mut(nd::Axis(1))
-                        .for_each(|mut gkv_u| {
-                            gkv_u.assign(&op.dot(&gkv_u));
-                        });
+        let eps = Float::abs(eps.unwrap_or_else(<A as Scalar>::Real::zero));
+        state.sort_indices();
+        let (indices, mut state) = state.into_flat();
+        if indices.is_empty() { return Err(EmptySystem); }
+        if indices.iter().any(|i| i.dim() == 0) { return Err(UnphysicalIndex); }
+        let norm = ComplexFloat::sqrt(
+            state.iter()
+                .map(|a| *a * a.conj())
+                .fold(A::zero(), A::add)
+        );
+        state.map_inplace(|a| { *a /= norm; });
+        let n = indices.len();
+        if n == 1 {
+            let mut g: nd::Array3<A>
+                = nd::Array::zeros((1, indices[0].dim(), 1));
+            state.move_into(g.slice_mut(nd::s![0, .., 0]));
+            let data: Vec<nd::Array3<A>> = vec![g];
+            let svals: Vec<nd::Array1<<A as Scalar>::Real>>
+                = Vec::with_capacity(0);
+            Ok(Self { n, data, outs: indices, svals, eps })
+        } else {
+            let (data, svals) = Self::factorize(&indices, state, eps);
+            Ok(Self { n, data, outs: indices, svals, eps })
+        }
+    }
+}
+
+impl<T, A> MPS<T, A>
+where A: ComplexFloat + ComplexFloatExt + 'static
+{
+    // do a single contraction between two particles' gamma matrices
+    //
+    // the result is returned as a 2D array in which the left and right physical
+    // indices are fused with the outermost indices in the contraction; i.e.
+    // for axis signatures
+    //      l :: { v, sl, u }
+    //      s :: { u }
+    //      r :: { u, sr, w }
+    // the result has axis signature
+    //      q :: { u<>sl, sr<>w }
+    // (where `<>` denotes fusion)
+    #[inline]
+    fn do_contract2(
+        l: &nd::Array3<A>,
+        s: &nd::Array1<A::Real>,
+        r: &nd::Array3<A>,
+    ) -> nd::Array2<A>
+    {
+        let shl = l.dim();
+        let l = l.view().into_shape((shl.0 * shl.1, shl.2)).unwrap();
+        let shr = r.dim();
+        let r = r.view().into_shape((shr.0, shr.1 * shr.2)).unwrap();
+        let mut q = nd::Array::zeros((shl.0 * shl.1, shr.1 * shr.2));
+        nd::Zip::from(q.rows_mut())
+            .and(l.rows())
+            .for_each(|qvs__, lvs_| {
+                nd::Zip::from(qvs__)
+                    .and(r.columns())
+                    .for_each(|qvstw, r_tw| {
+                        *qvstw
+                            = nd::Zip::from(lvs_)
+                            .and(s.view())
+                            .and(r_tw)
+                            .fold(A::zero(), |acc, lvsu, su, rutw| {
+                                acc + *lvsu * A::from_re(*su) * *rutw
+                            });
+                    })
+            });
+        q
+    }
+
+    // like `do_contract2`, but with the return value as a 3D array with
+    // physical indices fused in axis 1; i.e.
+    // for axis signatures
+    //      l :: { v, sl, u }
+    //      s :: { u }
+    //      r :: { u, sr, w }
+    // the result has axis signature
+    //      q :: { u, sl<>sr, w }
+    // (where `<>` denotes fusion)
+    #[inline]
+    fn do_contract3(
+        l: &nd::Array3<A>,
+        s: &nd::Array1<A::Real>,
+        r: &nd::Array3<A>,
+    ) -> nd::Array3<A>
+    {
+        let shl = l.shape();
+        let shr = r.shape();
+        Self::do_contract2(l, s, r)
+            .into_shape((shl[0], shl[1] * shr[1], shr[2]))
+            .unwrap()
+    }
+
+    // like `do_contract2`, but with the return value as a 4D array with
+    // all indices unfused; i.e.
+    // for axis signatures
+    //      l :: { v, sl, u }
+    //      s :: { u }
+    //      r :: { u, sr, w }
+    // the result has axis signature
+    //      q :: { u, sl, sr, w }
+    #[inline]
+    fn do_contract4(
+        l: &nd::Array3<A>,
+        s: &nd::Array1<A::Real>,
+        r: &nd::Array3<A>,
+    ) -> nd::Array4<A>
+    {
+        let shl = l.shape();
+        let shr = r.shape();
+        Self::do_contract2(l, s, r)
+            .into_shape((shl[0], shl[1], shr[1], shr[2]))
+            .unwrap()
+    }
+
+    // contraction via binary division as a rough heuristic to minimize runtime
+    // at the cost of having to allocate intermediate results
+    fn do_contract_multi(data: &[nd::Array3<A>], svals: &[nd::Array1<A::Real>])
+        -> nd::Array3<A>
+    {
+        match data.len() {
+            0 => nd::array![[[A::one()]]],
+            1 => data[0].clone(),
+            2 => Self::do_contract3(&data[0], &svals[0], &data[1]),
+            n => {
+                let n2 = n / 2;
+                let d_left = &data[..n2];
+                let s_left = &svals[..n2 - 1];
+                let d_right = &data[n2..];
+                let s_right = &svals[n2..];
+                let l = Self::do_contract_multi(d_left, s_left);
+                let r = Self::do_contract_multi(d_right, s_right);
+                Self::do_contract3(&l, &svals[n2 - 1], &r)
+            },
+        }
+    }
+
+    // contract the `k`-th and `k + 1`-th Γ tensors with neighboring singular
+    // values if applicable
+    //
+    // the result is returned as a 2D array in which the left and right physical
+    // indices are fused with the outermost indices in the contraction; i.e.
+    // for axis signatures
+    //      l :: { v, sl, u }
+    //      s :: { u }
+    //      r :: { u, sr, w }
+    // the result has axis signature
+    //      q :: { u<>sl, sr<>w }
+    // (where `<>` denotes fusion)
+    //
+    // assumes `k` and `k + 1` are in bounds
+    #[inline]
+    fn contract_local2(&self, k: usize) -> nd::Array2<A> {
+        let shk = self.data[k].dim();
+        let shkp1 = self.data[k + 1].dim();
+        let mut q = Self::do_contract3(
+            &self.data[k], &self.svals[k], &self.data[k + 1]);
+        if k != 0 {
+            nd::Zip::from(q.outer_iter_mut())
+                .and(&self.svals[k - 1])
+                .for_each(|mut qv__, lkm1v| {
+                    let lkm1v = A::from_re(*lkm1v);
+                    qv__.map_inplace(|qvsw| { *qvsw = *qvsw * lkm1v; });
                 });
-        Ok(self)
+        }
+        if k != self.n - 2 {
+            nd::Zip::from(q.axis_iter_mut(nd::Axis(2)))
+                .and(&self.svals[k + 1])
+                .for_each(|mut q__w, lkp1w| {
+                    let lkp1w = A::from_re(*lkp1w);
+                    q__w.map_inplace(|qvsw| { *qvsw = *qvsw * lkp1w; });
+                });
+        }
+        q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
+    }
+
+    // like `contract_local2`, but with the return value as a 3D array with
+    // physical indices fused in axis 1; i.e.
+    // for axis signatures
+    //      l :: { v, sl, u }
+    //      s :: { u }
+    //      r :: { u, sr, w }
+    // the result has axis signature
+    //      q :: { u, sl<>sr, w }
+    // (where `<>` denotes fusion)
+    //
+    // assumes `k` and `k + 1` are in bounds
+    #[inline]
+    fn contract_local3(&self, k: usize) -> nd::Array3<A> {
+        let shk = self.data[k].dim();
+        let shkp1 = self.data[k + 1].dim();
+        self.contract_local2(k)
+            .into_shape((shk.0, shk.1 * shkp1.1, shkp1.2))
+            .unwrap()
+    }
+
+    // like `contract_local2`, but with the return value as a 4D array with
+    // all indices unfused; i.e.
+    // for axis signatures
+    //      l :: { v, sl, u }
+    //      s :: { u }
+    //      r :: { u, sr, w }
+    // the result has axis signature
+    //      q :: { u, sl, sr, w }
+    //
+    // assumes `k` and `k + 1` are in bounds
+    #[inline]
+    fn contract_local4(&self, k: usize) -> nd::Array4<A> {
+        let shk = self.data[k].dim();
+        let shkp1 = self.data[k + 1].dim();
+        self.contract_local2(k)
+            .into_shape((shk.0, shk.1, shkp1.1, shkp1.2))
+            .unwrap()
+    }
+
+    /// Return the contraction of `self` into a flat state vector.
+    #[inline]
+    pub fn contract(&self) -> nd::Array1<A> {
+        let res = Self::do_contract_multi(&self.data, &self.svals);
+        let statelen = res.shape()[1];
+        res.into_shape(statelen).unwrap()
+    }
+
+    /// Contract `self` into a flat state vector and all physical indices.
+    #[inline]
+    pub fn into_contract(self) -> (Vec<T>, nd::Array1<A>) {
+        let state = self.contract();
+        (self.outs, state)
     }
 }
 
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
+    A: ComplexFloat + ComplexFloatExt + 'static
 {
-    // calculates the norm of the subspace belonging to particle `k`
-    // assumes `k` is in bounds
+    /// Return the contraction of `self` into a rank-N tensor.
     #[inline]
-    fn local_norm(&self, k: usize) -> A {
-        if k == 0 {
-            let gk = &self.data[k];
-            let lk = &self.svals[k];
-            gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    gk_s_.iter().zip(lk.iter().filter(|lkj| Float::is_normal(**lkj)))
-                        .map(|(gk_su, lku)| {
-                            *gk_su * gk_su.conj()
-                                * A::from_re(Float::powi(*lku, 2))
-                        })
-                        .fold(A::zero(), A::add)
-                })
-                .fold(A::zero(), A::add)
-                .sqrt()
-        } else if k == self.n - 1 {
-            let lkm1 = &self.svals[k - 1];
-            let gk = &self.data[k];
-            gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    gk_s_.iter().zip(lkm1.iter().filter(|lkm1j| Float::is_normal(**lkm1j)))
-                        .map(|(gkvs_, lkm1v)| {
-                            A::from_re(Float::powi(*lkm1v, 2))
-                                * *gkvs_ * gkvs_.conj()
-                        })
-                        .fold(A::zero(), A::add)
-                })
-                .fold(A::zero(), A::add)
-                .sqrt()
-        } else {
-            let lkm1 = &self.svals[k - 1];
-            let gk = &self.data[k];
-            let lk = &self.svals[k];
-            gk.axis_iter(nd::Axis(0)).zip(lkm1.iter().filter(|lkm1j| Float::is_normal(**lkm1j)))
-                .map(|(gkv, lkm1v)| {
-                    gkv.axis_iter(nd::Axis(0))
-                        .map(|gkvs| {
-                            gkvs.iter().zip(lk.iter().filter(|lkj| Float::is_normal(**lkj)))
-                                .map(|(gkvsu, lku)| {
-                                    *gkvsu * gkvsu.conj()
-                                        * A::from_re(Float::powi(*lku, 2))
-                                })
-                                .fold(A::zero(), A::add)
-                        })
-                        .fold(A::zero(), A::add)
-                            * A::from_re(Float::powi(*lkm1v, 2))
-                })
-                .fold(A::zero(), A::add)
-                .sqrt()
-        }
+    pub fn contract_nd(&self) -> nd::ArrayD<A> {
+        let state = self.contract();
+        let shape: Vec<usize> = self.outs.iter().map(Idx::dim).collect();
+        state.into_shape(shape).unwrap()
     }
 
-    // renormalizes the gamma matrix belonging to particle `k`
-    // assumes `k` is in bounds
+    /// Contract `self` into an rank-N tensor and all physical indices.
     #[inline]
-    fn renormalize(&mut self, k: usize) {
-        let norm = self.local_norm(k);
-        // if norm == A::zero() {
-        //     println!("{k}; {norm:?}");
-        //     println!("{}\n{:?}", k - 1, self.data[k - 1]);
-        //     println!("{}\n{:?}", k - 1, self.svals[k - 1]);
-        //     println!("{}\n{:?}", k, self.data[k]);
-        //     println!("{}\n{:?}", k, self.svals[k]);
-        //     println!("{}\n{:?}", k + 1, self.data[k + 1]);
-        //     panic!();
-        // }
-        self.data[k].iter_mut()
-            .for_each(|gkvsu| { *gkvsu = *gkvsu / norm; });
+    pub fn into_contract_nd(self) -> (Vec<T>, nd::ArrayD<A>) {
+        let (indices, state) = self.into_contract();
+        let shape: Vec<usize> = indices.iter().map(Idx::dim).collect();
+        (indices, state.into_shape(shape).unwrap())
+    }
+}
+
+impl<T, A> MPS<T, A>
+where
+    T: Idx,
+    A: ComplexFloat + ComplexFloatExt + Scalar<Real = <A as ComplexFloat>::Real> + 'static,
+    nd::Array2<A>: SchmidtDecomp<A>,
+{
+    // perform a contraction of the total state and repeat the initial
+    // factorization process to re-construct all Γ tensors and singular values
+    #[inline]
+    fn refactor(&mut self) {
+        let q = self.contract();
+        let (data_new, svals_new) = Self::factorize(&self.outs, q, self.eps);
+        self.data = data_new;
+        self.svals = svals_new;
+    }
+
+    // contract the `k`-th and `k + 1`-th Γ tensors (with neighboring singular
+    // values if applicable) and refactor to re-construct for only those sites
+    //
+    // assumes `k` and `k + 1` are in bounds
+    #[inline]
+    fn local_refactor(&mut self, k: usize) {
+        let shk = self.data[k].dim();
+        let shkp1 = self.data[k + 1].dim();
+        let Schmidt { u, s, q, rank }
+            = self.contract_local2(k).local_decomp(self.eps);
+        let mut gk_new = u.into_shape((shk.0, shk.1, rank)).unwrap();
+        if k != 0 {
+            nd::Zip::from(gk_new.outer_iter_mut())
+                .and(&self.svals[k - 1])
+                .for_each(|mut gkv__, lkm1v| {
+                    let lkm1v = A::from_re(*lkm1v);
+                    gkv__.map_inplace(|gkvsw| { *gkvsw /= lkm1v; });
+                });
+        }
+        let mut gkp1_new = q.into_shape((rank, shkp1.1, shkp1.2)).unwrap();
+        nd::Zip::from(gkp1_new.axis_iter_mut(nd::Axis(0)))
+            .and(&s)
+            .for_each(|mut gkp1v, sv| {
+                let sv = A::from_re(*sv);
+                gkp1v.map_inplace(|gkp1vj| { *gkp1vj /= sv; });
+            });
+        if k != self.n - 2 {
+            nd::Zip::from(gkp1_new.axis_iter_mut(nd::Axis(2)))
+                .and(&self.svals[k + 1])
+                .for_each(|mut gkp1__w, lkp1w| {
+                    let lkp1w = A::from_re(*lkp1w);
+                    gkp1__w.map_inplace(|gkp1vsw| { *gkp1vsw /= lkp1w; });
+                });
+        }
+        self.data[k] = gk_new;
+        self.svals[k] = s;
+        self.data[k + 1] = gkp1_new;
+    }
+
+    // apply local refactors to each bond in the MPS, going left to right
+    #[inline]
+    fn refactor_lrsweep(&mut self) {
+        for k in 0..self.n - 1 { self.local_refactor(k); }
+    }
+
+    // apply local refactors to each bond in the MPS, going right to left
+    #[inline]
+    fn refactor_rlsweep(&mut self) {
+        for k in (0..self.n - 1).rev() { self.local_refactor(k); }
+    }
+
+    // apply a full bidirectional sweep of the MPS, avoiding the double-refactor
+    // of the last bond
+    #[inline]
+    fn refactor_sweep(&mut self) {
+        for k in  0..self.n - 1        { self.local_refactor(k); }
+        for k in (0..self.n - 2).rev() { self.local_refactor(k); }
     }
 }
 
@@ -535,9 +819,8 @@ impl<T, A> MPS<T, A>
 where
     T: Idx,
     A: ComplexFloat + ComplexFloatExt + 'static,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
 {
-    /// Evaluate the expectation value of a local operator acting on (only) the
+    /// Evaluate the expectation value of a local operator acting (only) on the
     /// `k`-th particle.
     ///
     /// Returns zero if `k` is out of bounds. The arrangement of the elements of
@@ -545,8 +828,7 @@ where
     /// operator application.
     ///
     /// Fails if `op` is not square with a dimension equal to that of the `k`-th
-    /// physical index.
-    #[inline]
+    /// index.
     pub fn expectation_value(&self, k: usize, op: &nd::Array2<A>)
         -> MPSResult<A>
     {
@@ -555,794 +837,160 @@ where
         if op.shape() != [dk, dk] { return Err(OperatorIncompatibleShape); }
         let gk = &self.data[k];
         if k == 0 {
+            // op_{ts} * conj(Γ[k]_{0tw}) * Γ[k]_{0sw} * Λ[k]_{w}
+            let gk0__ = gk.slice(nd::s![0, .., ..]);
             let lk = &self.svals[k];
             let ev: A
-                = (0..dk)
-                .cartesian_product(0..dk)
-                .cartesian_product(lk.iter().enumerate())
-                .map(|((sk, ssk), (w, lkw))| {
-                    gk[[0, ssk, w]].conj()
-                        * op[[ssk, sk]]
-                        * gk[[0, sk, w]]
-                        * A::from_re(Float::powi(*lkw, 2))
-                })
-                .fold(A::zero(), A::add);
+                = nd::Zip::from(gk0__.outer_iter())
+                .and(op.outer_iter())
+                .fold(A::zero(), |acc, gk0t_, opt_| {
+                    nd::Zip::from(gk0__.outer_iter())
+                        .and(opt_)
+                        .fold(A::zero(), |acc, gk0s_, opts| {
+                            nd::Zip::from(gk0t_)
+                                .and(gk0s_)
+                                .and(lk)
+                                .fold(A::zero(), |acc, gk0tw, gk0sw, lkw| {
+                                    gk0tw.conj() * *gk0sw
+                                        * A::from_re(Float::powi(*lkw, 2))
+                                    + acc
+                                })
+                                * *opts
+                                + acc
+                        })
+                        + acc
+                });
             Ok(ev)
         } else if k == self.n - 1 {
+            // Λ[k-1]_{v} * op_{ts} * conj(Γ[k]_{vt0}) * Γ[k]_{vs0}
+            let gk__0 = gk.slice(nd::s![.., .., 0]);
             let lkm1 = &self.svals[k - 1];
             let ev: A
-                = lkm1.iter().enumerate()
-                .cartesian_product(0..dk)
-                .cartesian_product(0..dk)
-                .map(|(((v, lkm1v), sk), ssk)| {
-                    A::from_re(Float::powi(*lkm1v, 2))
-                        * gk[[v, ssk, 0]].conj()
-                        * op[[ssk, sk]]
-                        * gk[[v, sk, 0]]
-                })
-                .fold(A::zero(), A::add);
-            Ok(ev)
-        } else {
-            let lkm1 = &self.svals[k - 1];
-            let lk = &self.svals[k];
-            let ev: A
-                = lkm1.iter().enumerate()
-                .cartesian_product(0..dk)
-                .cartesian_product(0..dk)
-                .cartesian_product(lk.iter().enumerate())
-                .map(|((((v, lkm1v), sk), ssk), (w, lkw))| {
-                    A::from_re(Float::powi(*lkm1v, 2))
-                        * gk[[v, ssk, w]].conj()
-                        * op[[ssk, sk]]
-                        * gk[[v, sk, w]]
-                        * A::from_re(Float::powi(*lkw, 2))
-                })
-                .fold(A::zero(), A::add);
-            Ok(ev)
-        }
-    }
-}
-
-struct Svd<A: ComplexFloat> {
-    u: nd::Array2<A>,
-    s: Vec<A::Real>,
-    q: nd::Array2<A>,
-    rank: usize,
-}
-
-#[inline]
-fn do_svd_local<A>(q: nd::Array2<A>, eps: A::Real) -> Svd<A>
-where
-    A: ComplexFloat + ComplexFloatExt,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
-    nd::Array2<A>: SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<A::Real>, VT = nd::Array2<A>>,
-{
-    let (Some(u), mut s, Some(mut q)) = q.svd_into(true, true).unwrap()
-        else { unreachable!() };
-    let mut norm: A::Real = Float::sqrt(
-        s.iter()
-            .map(|sj| Float::powi(*sj, 2))
-            .fold(A::Real::zero(), A::Real::add)
-    );
-    s.iter_mut().for_each(|sj| { *sj = *sj / norm; });
-    let rank = s.iter()
-        .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
-        .count()
-        .max(1);
-    let mut s: Vec<_> = s.into_iter().take(rank).collect();
-    norm = Float::sqrt(
-        s.iter()
-            .map(|sj| Float::powi(*sj, 2))
-            .fold(A::Real::zero(), A::Real::add)
-    );
-    s.iter_mut()
-        .for_each(|sj| { *sj = *sj / norm; });
-    let rankslice = nd::Slice::new(0, Some(rank as isize), 1);
-    let renorm = A::from_re(norm);
-    q.slice_axis_inplace(nd::Axis(0), rankslice);
-    q.axis_iter_mut(nd::Axis(0))
-        .zip(&s)
-        .for_each(|(mut qv, sv)| {
-            qv.map_inplace(|qvj| { *qvj = *qvj * A::from_re(*sv) * renorm; });
-        });
-    let u = u.slice(nd::s![.., ..rank]).to_owned();
-    Svd { u, s, q, rank }
-}
-
-impl<T, A> MPS<T, A>
-where
-    T: Idx,
-    A: ComplexFloat + ComplexFloatExt,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
-    nd::Array2<A>: SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<A::Real>, VT = nd::Array2<A>>,
-{
-    /// Apply a unitary operator to the `k`-th and `k + 1`-th particles.
-    ///
-    /// Does nothing if either `k` or `k + 1` are out of bounds. The arrangement
-    /// of the elements of `op` should correspond to the usual
-    /// left-matrix-multiplication view of operator application. `op` is not
-    /// checked for unitarity.
-    ///
-    /// Fails if `u` is not square with a size equal to the product of the
-    /// dimensions of the `k`-th and `k + 1`-th physical indices.
-    #[inline]
-    pub fn apply_unitary2(&mut self, k: usize, op: &nd::Array2<A>)
-        -> MPSResult<&mut Self>
-    {
-        if self.n == 1 || k >= self.n - 1 { return Ok(self); }
-        // println!("u2 {k}");
-        let dk = self.outs[k].dim();
-        let dkp1 = self.outs[k + 1].dim();
-        if op.shape() != [dk * dkp1, dk * dkp1] {
-            return Err(OperatorIncompatibleShape);
-        }
-        if k == 0 {
-            let gk = &self.data[k];
-            let shk = gk.shape().to_vec();
-            let lk = &self.svals[k];
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z1 = dk;
-            let z2 = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shk[0] * dk, dkp1 * shkp1[2]),
-                    |(v_sk, skp1_w)| {
-                        let v = v_sk / z1;
-                        let sk = v_sk % z1;
-                        let skp1 = skp1_w / z2;
-                        let w = skp1_w % z2;
-                        (0..dk)
-                            .cartesian_product(0..dkp1)
-                            .cartesian_product(lk.iter().enumerate())
-                            .map(|((ssk, sskp1), (u, lku))| {
-                                gk[[v, ssk, u]]
-                                    * A::from_re(*lku)
-                                    * gkp1[[u, sskp1, w]]
-                                    * op[[sk * dkp1 + skp1, ssk * dkp1 + sskp1]]
-                            })
-                            .fold(A::zero(), A::add)
-                    },
-                );
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps);
-            let gk_new = u.into_shape((shk[0], dk, rank)).unwrap();
-            let mut gkp1_new = q.into_shape((rank, dkp1, shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-        } else {
-            let lkm1 = &self.svals[k - 1];
-            let gk = &self.data[k];
-            let shk = gk.shape().to_vec();
-            let lk = &self.svals[k];
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z1 = dk;
-            let z2 = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shk[0] * dk, dkp1 * shkp1[2]),
-                    |(v_sk, skp1_w)| {
-                        let v = v_sk / z1;
-                        let sk = v_sk % z1;
-                        let skp1 = skp1_w / z2;
-                        let w = skp1_w % z2;
-                        (0..dk)
-                            .cartesian_product(0..dkp1)
-                            .cartesian_product(lk.iter().enumerate())
-                            .map(|((ssk, sskp1), (u, lku))| {
-                                A::from_re(lkm1[v])
-                                    * gk[[v, ssk, u]]
-                                    * A::from_re(*lku)
-                                    * gkp1[[u, sskp1, w]]
-                                    * op[[sk * dkp1 + skp1, ssk * dkp1 + sskp1]]
-                            })
-                            .fold(A::zero(), A::add)
-                    },
-                );
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps);
-            let mut gk_new = u.into_shape((shk[0], dk, rank)).unwrap();
-            gk_new.axis_iter_mut(nd::Axis(0))
-                .zip(lkm1)
-                .for_each(|(mut gkv, lkm1v)| {
-                    gkv.iter_mut()
-                        .for_each(|gkvj| { *gkvj = *gkvj / A::from_re(*lkm1v); });
-                });
-            let mut gkp1_new = q.into_shape((rank, dkp1, shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-        }
-        self.renormalize(k);
-        self.renormalize(k + 1);
-        Ok(self)
-    }
-
-    /// Like [`Self::apply_unitary2`], but for a transformation described by a
-    /// tensor with unfused indices (i.e. rank 4).
-    ///
-    /// `op` should have shape `[a, b, a, b]`, where `a` and `b` are the
-    /// dimensions of the `k`-th and `k + 1`-th physical indices, respectively.
-    /// The last two are summed over.
-    #[inline]
-    pub fn apply_unitary2x2(&mut self, k: usize, op: &nd::Array4<A>)
-        -> MPSResult<&mut Self>
-    {
-        if self.n == 1 || k >= self.n - 1 { return Ok(self); }
-        let dk = self.outs[k].dim();
-        let dkp1 = self.outs[k + 1].dim();
-        if op.shape() != [dk, dkp1, dk, dkp1] {
-            return Err(OperatorIncompatibleShape);
-        }
-        if k == 0 {
-            let gk = &self.data[k];
-            let shk = gk.shape().to_vec();
-            let lk = &self.svals[k];
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z1 = dk;
-            let z2 = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shk[0] * dk, dkp1 * shkp1[2]),
-                    |(v_sk, skp1_w)| {
-                        let v = v_sk / z1;
-                        let sk = v_sk % z1;
-                        let skp1 = skp1_w / z2;
-                        let w = skp1_w % z2;
-                        (0..dk)
-                            .cartesian_product(0..dkp1)
-                            .cartesian_product(lk.iter().enumerate())
-                            .map(|((ssk, sskp1), (u, lku))| {
-                                gk[[v, ssk, u]]
-                                    * A::from_re(*lku)
-                                    * gkp1[[u, sskp1, w]]
-                                    * op[[sk, skp1, ssk, sskp1]]
-                            })
-                            .fold(A::zero(), A::add)
-                    },
-                );
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps);
-            let gk_new = u.into_shape((shk[0], dk, rank)).unwrap();
-            let mut gkp1_new = q.into_shape((rank, dkp1, shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-        } else {
-            let lkm1 = &self.svals[k - 1];
-            let gk = &self.data[k];
-            let shk = gk.shape().to_vec();
-            let lk = &self.svals[k];
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z1 = dk;
-            let z2 = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shk[0] * dk, dkp1 * shkp1[2]),
-                    |(v_sk, skp1_w)| {
-                        let v = v_sk / z1;
-                        let sk = v_sk % z1;
-                        let skp1 = skp1_w / z2;
-                        let w = skp1_w % z2;
-                        (0..dk)
-                            .cartesian_product(0..dkp1)
-                            .cartesian_product(lk.iter().enumerate())
-                            .map(|((ssk, sskp1), (u, lku))| {
-                                A::from_re(lkm1[v])
-                                    * gk[[v, ssk, u]]
-                                    * A::from_re(*lku)
-                                    * gkp1[[u, sskp1, w]]
-                                    * op[[sk, skp1, ssk, sskp1]]
-                            })
-                            .fold(A::zero(), A::add)
-                    },
-                );
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps);
-            let mut gk_new = u.into_shape((shk[0], dk, rank)).unwrap();
-            gk_new.axis_iter_mut(nd::Axis(0))
-                .zip(lkm1)
-                .for_each(|(mut gkv, lkm1v)| {
-                    gkv.iter_mut()
-                        .for_each(|gkvj| { *gkvj = *gkvj / A::from_re(*lkm1v); });
-                });
-            let mut gkp1_new = q.into_shape((rank, dkp1, shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-        }
-        self.renormalize(k);
-        self.renormalize(k + 1);
-        Ok(self)
-    }
-}
-
-impl<T, A> MPS<T, A>
-where
-    T: Idx + std::fmt::Debug,
-    A: ComplexFloat + ComplexFloatExt + 'static + std::fmt::Debug,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
-    nd::Array2<A>: SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<A::Real>, VT = nd::Array2<A>>,
-    Standard: Distribution<A::Real>,
-{
-    /// Perform a randomized projective measurement on the `k`-th particle,
-    /// reporting the index value of the outcome state for that particle.
-    ///
-    /// If `k` is out of bounds, do nothing and return `None`.
-    #[inline]
-    pub fn measure<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
-    where R: Rng + ?Sized
-    {
-        // broad algorithm:
-        // 1. calculate measurement probabilities
-        // 2. sample the quantum number of the measurement outcome
-        // 3. perform a local contraction with k's nearest neighbors in order to
-        // 4. redo SVDs locally to maintain proper normalization
-
-        if k >= self.n { return None; }
-        let r: A::Real = rng.gen();
-        // println!("measure {k}");
-        if self.n == 1 {
-            // calculate measurement probabilities
-            let gk = &self.data[0];
-            let probs: Vec<A::Real>
-                = gk.iter()
-                .map(|gks| (*gks * gks.conj()).re())
-                .collect();
-
-            // sample the measurement outcome
-            let maybe_p: Option<usize>
-                = probs.iter().copied()
-                .scan(A::Real::zero(), |cu, pr| { *cu = *cu + pr; Some(*cu) })
-                .enumerate()
-                .find_map(|(k, cuprob)| (r < cuprob).then_some(k));
-            let p: usize
-                = if let Some(p) = maybe_p {
-                    p
-                } else {
-                    panic!("{self:?}");
-                };
-
-            // project into the outcome state
-            self.data[0].iter_mut().enumerate()
-                .for_each(|(s, gks)| {
-                    *gks = if s == p { A::one() } else { A::zero() };
-                });
-            // done
-            self.renormalize(k);
-            Some(p)
-        } else if k == 0 {
-            // calculate measurement probabilities
-            let gk = &self.data[k];
-            let lk = &self.svals[k];
-            let probs: Vec<A::Real>
-                = gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    gk_s_.iter()
-                        .zip(lk)
-                        .map(|(gk_su, lku)| {
-                            (*gk_su * gk_su.conj()).re()
-                                * Float::powi(*lku, 2)
-                        })
-                        .fold(A::Real::zero(), A::Real::add)
-                })
-                .collect();
-
-            // sample the measurement outcome
-            let maybe_p: Option<usize>
-                = probs.iter().copied()
-                .scan(A::Real::zero(), |cu, pr| { *cu = *cu + pr; Some(*cu) })
-                .enumerate()
-                .find_map(|(k, cuprob)| (r < cuprob).then_some(k));
-            let p: usize
-                = if let Some(p) = maybe_p {
-                    p
-                } else {
-                    panic!("{self:?}");
-                };
-            let renorm = A::from_re(Float::sqrt(probs[p]));
-
-            // local contraction into an SVD-able matrix
-            let dk = self.outs[k].dim();
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (dk, shkp1[1] * shkp1[2]),
-                    |(sk, skp1_w)| {
-                        let skp1 = skp1_w / z;
-                        let w = skp1_w % z;
-                        if sk == p {
-                            let gkvs_ = gk.slice(nd::s![0, sk, ..]);
-                            let gkp1_sw = gkp1.slice(nd::s![.., skp1, w]);
-                            gkvs_.iter().zip(lk).zip(gkp1_sw)
-                                .map(|((gkvsu, lku), gkp1usw)| {
-                                    *gkvsu * A::from_re(*lku) * *gkp1usw
-                                        / renorm
+                = nd::Zip::from(gk__0.outer_iter())
+                .and(gk__0.outer_iter())
+                .and(lkm1)
+                .fold(A::zero(), |acc, gkv_0p, gkv_0, lkm1v| {
+                    nd::Zip::from(gkv_0p)
+                        .and(op.outer_iter())
+                        .fold(A::zero(), |acc, gkvt0, opt_| {
+                            nd::Zip::from(gkv_0)
+                                .and(opt_)
+                                .fold(A::zero(), |acc, gkvs0, opts| {
+                                    A::from_re(Float::powi(*lkm1v, 2))
+                                        * gkvt0.conj() * *gkvs0
+                                        * *opts
+                                    + acc
                                 })
-                                .fold(A::zero(), A::add)
-                        } else {
-                            A::zero()
-                        }
-                    },
-                );
-
-            // redo SVDs
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps);
-            let gk_new = u.into_shape((1, dk, rank)).unwrap();
-            let mut gkp1_new = q.into_shape((rank, shkp1[1], shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-            // done
-            self.renormalize(k);
-            self.renormalize(k + 1);
-            Some(p)
-        } else if k == 1 {
-            // calculate measurement probabilities
-            let lkm1 = &self.svals[k - 1];
-            let gk = &self.data[k];
-            let lk = &self.svals[k];
-            let probs: Vec<A::Real>
-                = gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    gk_s_.iter()
-                        .zip(lkm1.iter().cartesian_product(lk))
-                        .map(|(gkvsu, (lkm1v, lku))| {
-                            Float::powi(*lkm1v, 2)
-                                * (*gkvsu * gkvsu.conj()).re()
-                                * Float::powi(*lku, 2)
+                                + acc
                         })
-                        .fold(A::Real::zero(), A::Real::add)
-                })
-                .collect();
-
-            // sample the measurement outcome
-            let maybe_p: Option<usize>
-                = probs.iter().copied()
-                .scan(A::Real::zero(), |cu, pr| { *cu = *cu + pr; Some(*cu) })
-                .enumerate()
-                .find_map(|(k, cuprob)| (r < cuprob).then_some(k));
-            let p: usize
-                = if let Some(p) = maybe_p {
-                    p
-                } else {
-                    panic!("{self:?}");
-                };
-            let renorm = A::from_re(Float::sqrt(probs[p]));
-
-            // local contraction into an SVD-able matrix
-            let gkm1 = &self.data[k - 1];
-            let shkm1 = gkm1.shape().to_vec();
-            let dk = self.outs[k].dim();
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z1 = shkm1[1];
-            let z2 = shkp1[1] * shkp1[2];
-            let z3 = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shkm1[0] * shkm1[1], dk * shkp1[1] * shkp1[2]),
-                    |(v_skm1, sk_skp1_w)| {
-                        let v = v_skm1 / z1;
-                        let skm1 = v_skm1 % z1;
-                        let sk = sk_skp1_w / z2;
-                        let skp1 = (sk_skp1_w % z2) / z3;
-                        let w = sk_skp1_w % z3;
-                        if sk == p {
-                            let gkm1vs_ = gkm1.slice(nd::s![v, skm1, ..]);
-                            let gk_s_ = gk.slice(nd::s![.., sk, ..]);
-                            let gkp1_sw = gkp1.slice(nd::s![.., skp1, w]);
-                            gkm1vs_.iter().zip(lkm1)
-                                .zip(gk_s_.axis_iter(nd::Axis(0)))
-                                .map(|((gkm1vsu1, lkm1u1), gku1s_)| {
-                                    gku1s_.iter().zip(lk).zip(&gkp1_sw)
-                                        .map(|((gku1su2, lku2), gkp1u2sw)| {
-                                            *gkm1vsu1
-                                                * A::from_re(*lkm1u1)
-                                                * *gku1su2
-                                                * A::from_re(*lku2)
-                                                * *gkp1u2sw
-                                                / renorm
+                        * A::from_re(Float::powi(*lkm1v, 2))
+                        + acc
+                });
+            Ok(ev)
+        } else {
+            // Λ[k-1]_{v} * op_{ts} * conj(Γ[k]_{vtw}) * Γ[k]_{vsw} * Λ[k]_{w}
+            let lkm1 = &self.svals[k - 1];
+            let lk = &self.svals[k];
+            let ev: A
+                = nd::Zip::from(gk.outer_iter())
+                .and(gk.outer_iter())
+                .and(lkm1)
+                .fold(A::zero(), |acc, gkv__p, gkv__, lkm1v| {
+                    nd::Zip::from(gkv__p.outer_iter())
+                        .and(op.outer_iter())
+                        .fold(A::zero(), |acc, gkvt_, opt_| {
+                            nd::Zip::from(gkv__.outer_iter())
+                                .and(opt_)
+                                .fold(A::zero(), |acc, gkvs_, opts| {
+                                    nd::Zip::from(gkvt_)
+                                        .and(gkvs_)
+                                        .and(lk)
+                                        .fold(A::zero(), |acc, gkvtw, gkvsw, lkw| {
+                                            gkvtw.conj() * *gkvsw
+                                                * A::from_re(Float::powi(*lkw, 2))
+                                            + acc
                                         })
-                                        .fold(A::zero(), A::add)
+                                        * *opts
+                                        + acc
                                 })
-                                .fold(A::zero(), A::add)
-                        } else {
-                            A::zero()
-                        }
-                    },
-                );
+                                + acc
+                        })
+                        * A::from_re(Float::powi(*lkm1v, 2))
+                        + acc
+                });
+            Ok(ev)
+        }
+    }
 
-            // redo SVDs
-            let Svd { u, s, mut q, rank } = do_svd_local(q, self.eps); // k - 1 and k
-            let gkm1_new = u.into_shape((shkm1[0], shkm1[1], rank)).unwrap();
-            self.data[k - 1] = gkm1_new;
-            self.svals[k - 1] = s;
-            //
-            q = q.into_shape((rank * dk, shkp1[1] * shkp1[2])).unwrap();
-            let udim = rank;
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps); // k and k + 1
-            let mut gk_new = u.into_shape((udim, dk, rank)).unwrap();
-            gk_new.axis_iter_mut(nd::Axis(0))
-                .zip(&self.svals[k - 1])
-                .for_each(|(mut gkv, skm1v)| {
-                    gkv.iter_mut()
-                        .for_each(|gkvj| { *gkvj = *gkvj / A::from_re(*skm1v); });
-                });
-            let mut gkp1_new = q.into_shape((rank, shkp1[1], shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-            // done
-            self.renormalize(k - 1);
-            self.renormalize(k);
-            self.renormalize(k + 1);
-            Some(p)
+    // calculates the norm of the subspace belonging to particle `k`
+    // assume `k` is in bounds
+    #[inline]
+    fn local_norm(&self, k: usize) -> A {
+        if k == 0 {
+            let gk0__ = &self.data[k].slice(nd::s![0, .., ..]);
+            let lk = &self.svals[k];
+            gk0__.outer_iter()
+                .map(|gk0s_| {
+                    nd::Zip::from(gk0s_)
+                        .and(lk)
+                        .fold(A::zero(), |acc, gk0sw, lkw| {
+                            gk0sw.conj() * *gk0sw
+                                * A::from_re(Float::powi(*lkw, 2))
+                            + acc
+                        })
+                })
+                .fold(A::zero(), A::add)
+                .sqrt()
         } else if k == self.n - 1 {
-            // calculate measurement probabilities
             let lkm1 = &self.svals[k - 1];
-            let gk = &self.data[k];
-            let probs: Vec<A::Real>
-                = gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    gk_s_.iter()
-                        .zip(lkm1)
-                        .map(|(gkvs_, lkm1v)| {
-                            Float::powi(*lkm1v, 2)
-                                * (*gkvs_ * gkvs_.conj()).re()
-                        })
-                        .fold(A::Real::zero(), A::Real::add)
+            let gk__0 = &self.data[k].slice(nd::s![.., .., 0]);
+            nd::Zip::from(gk__0.outer_iter())
+                .and(lkm1)
+                .fold(A::zero(), |acc, gkv_0, lkm1v| {
+                    gkv_0.iter()
+                        .map(|gkvs0| gkvs0.conj() * *gkvs0)
+                        .fold(A::zero(), A::add)
+                        * A::from_re(Float::powi(*lkm1v, 2))
+                    + acc
                 })
-                .collect();
-
-            // sample the measurement outcome
-            let maybe_p: Option<usize>
-                = probs.iter().copied()
-                .scan(A::Real::zero(), |cu, pr| { *cu = *cu + pr; Some(*cu) })
-                .enumerate()
-                .find_map(|(k, cuprob)| (r < cuprob).then_some(k));
-            let p: usize
-                = if let Some(p) = maybe_p {
-                    p
-                } else {
-                    panic!("{self:?}");
-                };
-            let renorm = A::from_re(Float::sqrt(probs[p]));
-
-            // local contraction into an SVD-able matrix
-            let lkm2 = &self.svals[k - 2];
-            let gkm1 = &self.data[k - 1];
-            let shkm1 = gkm1.shape().to_vec();
-            let dk = self.outs[k].dim();
-            let z = shkm1[1];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shkm1[0] * shkm1[1], dk),
-                    |(v_skm1, sk)| {
-                        let v = v_skm1 / z;
-                        let skm1 = v_skm1 % z;
-                        if sk == p {
-                            let lkm2v = A::from_re(lkm2[v]);
-                            let gkm1vs_ = gkm1.slice(nd::s![v, skm1, ..]);
-                            let gk_sw = gk.slice(nd::s![.., sk, 0]);
-                            gkm1vs_.iter().zip(lkm1).zip(&gk_sw)
-                                .map(|((gkm1vsu, lkm1u), gkusw)| {
-                                    *gkm1vsu * A::from_re(*lkm1u) * *gkusw
-                                        / renorm
-                                })
-                                .fold(A::zero(), A::add) * lkm2v
-                        } else {
-                            A::zero()
-                        }
-                    },
-                );
-
-            // redo SVDs
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps);
-            let mut gkm1_new = u.into_shape((shkm1[0], shkm1[1], rank)).unwrap();
-            gkm1_new.axis_iter_mut(nd::Axis(0))
-                .zip(lkm2)
-                .for_each(|(mut gkm1v, lkm2v)| {
-                    gkm1v.iter_mut()
-                        .for_each(|gkm1vj| { *gkm1vj = *gkm1vj / A::from_re(*lkm2v); });
-                });
-            let mut gk_new = q.into_shape((rank, dk, 1)).unwrap();
-            gk_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkv, sv)| {
-                    gkv.iter_mut()
-                        .for_each(|gkvj| { *gkvj = *gkvj / A::from_re(*sv); });
-                });
-            self.data[k - 1] = gkm1_new;
-            self.svals[k - 1] = s;
-            self.data[k] = gk_new;
-            // done
-            self.renormalize(k - 1);
-            self.renormalize(k);
-            Some(p)
+                .sqrt()
         } else {
-            // calculate measurement probabilities
             let lkm1 = &self.svals[k - 1];
             let gk = &self.data[k];
             let lk = &self.svals[k];
-            let probs: Vec<A::Real>
-                = gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    gk_s_.iter()
-                        .zip(lkm1.iter().cartesian_product(lk))
-                        .map(|(gkvsu, (lkm1v, lku))| {
-                            Float::powi(*lkm1v, 2)
-                                * (*gkvsu * gkvsu.conj()).re()
-                                * Float::powi(*lku, 2)
-                        })
-                        .fold(A::Real::zero(), A::Real::add)
-                })
-                .collect();
-
-            // sample the measurement outcome
-            let maybe_p: Option<usize>
-                = probs.iter().copied()
-                .scan(A::Real::zero(), |cu, pr| { *cu = *cu + pr; Some(*cu) })
-                .enumerate()
-                .find_map(|(k, cuprob)| (r < cuprob).then_some(k));
-            let p: usize
-                = if let Some(p) = maybe_p {
-                    p
-                } else {
-                    panic!("{self:?}");
-                };
-            let renorm = A::from_re(Float::sqrt(probs[p]));
-            // println!("{p}; {renorm:?}");
-
-            // local contraction into an SVD-able matrix
-            let lkm2 = &self.svals[k - 2];
-            let gkm1 = &self.data[k - 1];
-            let shkm1 = gkm1.shape().to_vec();
-            let dk = self.outs[k].dim();
-            let gkp1 = &self.data[k + 1];
-            let shkp1 = gkp1.shape().to_vec();
-            let z1 = shkm1[1];
-            let z2 = shkp1[1] * shkp1[2];
-            let z3 = shkp1[2];
-            let q: nd::Array2<A>
-                = nd::Array2::from_shape_fn(
-                    (shkm1[0] * shkm1[1], dk * shkp1[1] * shkp1[2]),
-                    |(v_skm1, sk_skp1_w)| {
-                        let v = v_skm1 / z1;
-                        let skm1 = v_skm1 % z1;
-                        let sk = sk_skp1_w / z2;
-                        let skp1 = (sk_skp1_w % z2) / z3;
-                        let w = sk_skp1_w % z3;
-                        if sk == p {
-                            let lkm2v = A::from_re(lkm2[v]);
-                            let gkm1vs_ = gkm1.slice(nd::s![v, skm1, ..]);
-                            let gk_s_ = gk.slice(nd::s![.., sk, ..]);
-                            let gkp1_sw = gkp1.slice(nd::s![.., skp1, w]);
-                            gkm1vs_.iter().zip(lkm1)
-                                .zip(gk_s_.axis_iter(nd::Axis(0)))
-                                .map(|((gkm1vsu1, lkm1u1), gku1s_)| {
-                                    gku1s_.iter().zip(lk).zip(&gkp1_sw)
-                                        .map(|((gku1su2, lku2), gkp1u2sw)| {
-                                            *gkm1vsu1
-                                                * A::from_re(*lkm1u1)
-                                                * *gku1su2
-                                                * A::from_re(*lku2)
-                                                * *gkp1u2sw
-                                                / renorm
-                                        })
-                                        .fold(A::zero(), A::add)
+            nd::Zip::from(gk.outer_iter())
+                .and(lkm1)
+                .fold(A::zero(), |acc, gkv__, lkm1v| {
+                    gkv__.outer_iter()
+                        .map(|gkvs_| {
+                            nd::Zip::from(gkvs_)
+                                .and(lk)
+                                .fold(A::zero(), |acc, gkvsw, lkw| {
+                                    gkvsw.conj() * *gkvsw
+                                        * A::from_re(Float::powi(*lkw, 2))
+                                    + acc
                                 })
-                                .fold(A::zero(), A::add) * lkm2v
-                        } else {
-                            A::zero()
-                        }
-                    },
-                );
-            // println!("{lkm2:?}");
-            // println!("{gkm1:?}");
-            // println!("{lkm1:?}");
-            // println!("{gk:?}");
-            // println!("{lk:?}");
-            // println!("{gkp1:?}");
-            // if k < self.n - 2 {
-            //     println!("{:?}", self.svals[k + 1]);
-            // }
-            // println!("--");
-            // println!("{q:?}");
-
-            // redo SVDs
-            let Svd { u, s, mut q, rank } = do_svd_local(q, self.eps); // k - 1 and k
-            let mut gkm1_new = u.into_shape((shkm1[0], shkm1[1], rank)).unwrap();
-            gkm1_new.axis_iter_mut(nd::Axis(0))
-                .zip(lkm2)
-                .for_each(|(mut gkm1v, lkm2v)| {
-                    gkm1v.iter_mut()
-                        .for_each(|gkm1vj| { *gkm1vj = *gkm1vj / A::from_re(*lkm2v); });
-                });
-            self.data[k - 1] = gkm1_new;
-            self.svals[k - 1] = s;
-            //
-            q = q.into_shape((rank * dk, shkp1[1] * shkp1[2])).unwrap();
-            let udim = rank;
-            let Svd { u, s, q, rank } = do_svd_local(q, self.eps); // k and k + 1
-            let mut gk_new = u.into_shape((udim, dk, rank)).unwrap();
-            gk_new.axis_iter_mut(nd::Axis(0))
-                .zip(&self.svals[k - 1])
-                .for_each(|(mut gkv, skm1v)| {
-                    gkv.iter_mut()
-                        .for_each(|gkvj| { *gkvj = *gkvj / A::from_re(*skm1v); });
-                });
-            let mut gkp1_new = q.into_shape((rank, shkp1[1], shkp1[2])).unwrap();
-            gkp1_new.axis_iter_mut(nd::Axis(0))
-                .zip(&s)
-                .for_each(|(mut gkp1v, sv)| {
-                    gkp1v.iter_mut()
-                        .for_each(|gkp1vj| { *gkp1vj = *gkp1vj / A::from_re(*sv); });
-                });
-            self.data[k] = gk_new;
-            self.svals[k] = s;
-            self.data[k + 1] = gkp1_new;
-            // if self.data[k - 1].iter().any(|g| Float::is_nan(g.re()) || Float::is_nan(g.im())) { panic!("gkm1"); }
-            // if self.svals[k - 1].iter().any(|g| Float::is_nan(*g)) { panic!("lkm1"); }
-            // if self.data[k].iter().any(|g| Float::is_nan(g.re()) || Float::is_nan(g.im())) { panic!("gk"); }
-            // if self.svals[k].iter().any(|g| Float::is_nan(*g)) { panic!("lk"); }
-            // if self.data[k + 1].iter().any(|g| Float::is_nan(g.re()) || Float::is_nan(g.im())) { panic!("lkp1"); }
-            // done
-            self.renormalize(k - 1);
-            self.renormalize(k);
-            self.renormalize(k + 1);
-            Some(p)
+                        })
+                        .fold(A::zero(), A::add)
+                        * A::from_re(Float::powi(*lkm1v, 2))
+                    + acc
+                })
+                .sqrt()
         }
+    }
+
+    // renormalizes the Γ tensor belonging to particle `k`
+    // assumes `k` is in bounds
+    #[inline]
+    fn local_renormalize(&mut self, k: usize) {
+        let norm = self.local_norm(k);
+        self.data[k].map_inplace(|gkvsu| { *gkvsu = *gkvsu / norm; });
     }
 }
 
 impl<T, A> MPS<T, A>
-where
-    A: ComplexFloat,
-    A::Real: Float,
+where A: ComplexFloat
 {
-    /// Return the number of particles.
-    #[inline]
-    pub fn n(&self) -> usize { self.n }
-
     /// Compute the Von Neumann entropy for a bipartition placed on the `b`-th
     /// bond.
     ///
@@ -1353,12 +1001,12 @@ where
         self.svals.get(b)
             .map(|s| {
                 s.iter().copied()
-                    .filter(|sk| sk > &zero)
+                    .filter(|sk| *sk > zero)
                     .map(|sk| {
                         let sk2 = sk * sk;
                         -sk2 * Float::ln(sk2)
                     })
-                    .fold(zero, |acc, term| acc + term)
+                    .fold(zero, A::Real::add)
             })
     }
 
@@ -1378,7 +1026,7 @@ where
                     Float::ln(
                         s.iter().copied()
                             .map(|sk| Float::powf(sk * sk, a))
-                            .fold(A::Real::zero(), |acc, sk| acc + sk)
+                            .fold(A::Real::zero(), A::Real::add)
                     ) * Float::recip(one - a)
                 })
         }
@@ -1388,10 +1036,311 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
+    A: ComplexFloat + 'static,
 {
-    /// Convert to an unevaluated [`Network`] representing the pure state.
+    /// Apply a unitary transformation to the `k`-th particle.
+    ///
+    /// Does nothing if `k` is out of bounds. The arrangemet of the elements of
+    /// `op` should correspond to the usual left-matrix-multiplication view of
+    /// operator application. `op` is not checked for unitarity.
+    ///
+    /// Fails if `op` is not square with a dimension equal to that of the `k`-th
+    /// physical index.
+    #[inline]
+    pub fn apply_unitary1(&mut self, k: usize, op: &nd::Array2<A>)
+        -> MPSResult<&mut Self>
+    {
+        if k >= self.n { return Ok(self); }
+        let dk = self.outs[k].dim();
+        if op.shape() != [dk, dk] { return Err(OperatorIncompatibleShape); }
+        self.data[k]
+            .axis_iter_mut(nd::Axis(0))
+            .for_each(|mut gkv| {
+                gkv.axis_iter_mut(nd::Axis(1))
+                    .for_each(|mut gkv_u| {
+                        gkv_u.assign(&op.dot(&gkv_u));
+                    });
+            });
+        Ok(self)
+    }
+}
+
+impl<T, A> MPS<T, A>
+where
+    T: Idx,
+    A: ComplexFloat + ComplexFloatExt + Scalar<Real = <A as ComplexFloat>::Real> + 'static,
+    nd::Array2<A>: SchmidtDecomp<A>,
+{
+    /// Apply a unitary operator to the `k`-th and `k + 1`-th particles.
+    ///
+    /// Does nothing if either `k` or `k + 1` are out of bounds. The arrangement
+    /// of the elements of `op` should correrspond to the usual
+    /// left-matrix-multiplication view of operator application. `op` is not
+    /// checked for unitarity.
+    ///
+    /// Fails if `op` is not square with a size equal to the product of the
+    /// dimensions of the `k`-th and `k + 1`-th physical indices.
+    #[inline]
+    pub fn apply_unitary2(&mut self, k: usize, op: &nd::Array2<A>)
+        -> MPSResult<&mut Self>
+    {
+        if self.n == 1 || k >= self.n - 1 { return Ok(self); }
+
+        let shk = self.data[k].dim();
+        let shkp1 = self.data[k + 1].dim();
+        if op.shape() != [shk.1 * shkp1.1, shk.1 * shkp1.1] {
+            return Err(OperatorIncompatibleShape);
+        }
+
+        let mut q = self.contract_local3(k);
+        q.axis_iter_mut(nd::Axis(0))
+            .for_each(|mut qv__| {
+                qv__.axis_iter_mut(nd::Axis(1))
+                    .for_each(|mut qv_w| {
+                        qv_w.assign(&op.dot(&qv_w));
+                    });
+            });
+
+        let Schmidt { u, s, q, rank }
+            = q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
+            .local_decomp(self.eps);
+        let mut gk_new = u.into_shape((shk.0, shk.1, rank)).unwrap();
+        if k != 0 {
+            nd::Zip::from(gk_new.outer_iter_mut())
+                .and(&self.svals[k - 1])
+                .for_each(|mut gkv__, lkm1v| {
+                    let lkm1v = A::from_re(*lkm1v);
+                    gkv__.map_inplace(|gkvsw| { *gkvsw /= lkm1v; });
+                });
+        }
+        let mut gkp1_new = q.into_shape((rank, shkp1.1, shkp1.2)).unwrap();
+        nd::Zip::from(gkp1_new.axis_iter_mut(nd::Axis(0)))
+            .and(&s)
+            .for_each(|mut gkp1v, sv| {
+                let sv = A::from_re(*sv);
+                gkp1v.map_inplace(|gkp1vj| { *gkp1vj /= sv; });
+            });
+        if k != self.n - 2 {
+            nd::Zip::from(gkp1_new.axis_iter_mut(nd::Axis(2)))
+                .and(&self.svals[k + 1])
+                .for_each(|mut gkp1__w, lkp1w| {
+                    let lkp1w = A::from_re(*lkp1w);
+                    gkp1__w.map_inplace(|gkp1vsw| { *gkp1vsw /= lkp1w; });
+                });
+        }
+        self.data[k] = gk_new;
+        self.svals[k] = s;
+        self.data[k + 1] = gkp1_new;
+        // self.local_renormalize(k);
+        // self.local_renormalize(k + 1);
+        Ok(self)
+    }
+}
+
+impl<T, A> MPS<T, A>
+where
+    T: Idx,
+    A: ComplexFloat + ComplexFloatExt + Scalar<Real = <A as ComplexFloat>::Real> + 'static,
+    nd::Array2<A>: SchmidtDecomp<A>,
+    Standard: Distribution<<A as ComplexFloat>::Real>,
+{
+    // calculate the state probabilities for the `k`-th particle and randomly
+    // sample one from that distribution, returning the quantum number and its
+    // probability
+    //
+    // assumes `k` is in bounds
+    fn sample_state<R>(&self, k: usize, rng: &mut R)
+        -> (usize, <A as ComplexFloat>::Real)
+    where R: Rng + ?Sized
+    {
+        let r: <A as ComplexFloat>::Real = rng.gen();
+        let probs: Vec<<A as ComplexFloat>::Real>;
+        if self.n == 1 {
+            probs
+                = self.data[k].iter()
+                .map(|g| (g.conj() * *g).re())
+                .collect();
+        } else if k == 0 {
+            let gk0__ = self.data[k].slice(nd::s![0, .., ..]);
+            let lk = self.svals[k].view();
+            probs
+                = gk0__.outer_iter()
+                .map(|gk0s_| {
+                    nd::Zip::from(gk0s_)
+                        .and(lk)
+                        .fold(
+                            <A as ComplexFloat>::Real::zero(),
+                            |acc, gk0su, lku| {
+                                (gk0su.conj() * *gk0su).re()
+                                    * Float::powi(*lku, 2)
+                                + acc
+                            },
+                        )
+                })
+                .collect();
+        } else if k == self.n - 1 {
+            let lkm1 = self.svals[k - 1].view();
+            let gk__0 = self.data[k].slice(nd::s![.., .., 0]);
+            probs
+                = gk__0.axis_iter(nd::Axis(1))
+                .map(|gk_s0| {
+                    nd::Zip::from(gk_s0)
+                        .and(lkm1)
+                        .fold(
+                            <A as ComplexFloat>::Real::zero(),
+                            |acc, gkus0, lkm1u| {
+                                (gkus0.conj() * *gkus0).re()
+                                    * Float::powi(*lkm1u, 2)
+                                + acc
+                            },
+                        )
+                })
+                .collect();
+        } else {
+            let lkm1 = self.svals[k - 1].view();
+            let gk = &self.data[k];
+            let lk = self.svals[k].view();
+            probs
+                = gk.axis_iter(nd::Axis(1))
+                .map(|gk_s_| {
+                    nd::Zip::from(gk_s_.outer_iter())
+                        .and(lkm1)
+                        .fold(
+                            <A as ComplexFloat>::Real::zero(),
+                            |acc, gkvs_, lkm1v| {
+                                nd::Zip::from(gkvs_)
+                                    .and(lk)
+                                    .fold(
+                                        <A as ComplexFloat>::Real::zero(),
+                                        |acc, gkvsu, lku| {
+                                            (gkvsu.conj() * *gkvsu).re()
+                                                * Float::powi(*lku, 2)
+                                            + acc
+                                        },
+                                    )
+                                    * Float::powi(*lkm1v, 2)
+                                + acc
+                            },
+                        )
+                })
+                .collect();
+        }
+        let p
+            = probs.iter().copied()
+            .scan(
+                <A as ComplexFloat>::Real::zero(),
+                |cu, pr| { *cu = *cu + pr; Some(*cu) }
+            )
+            .enumerate()
+            .find_map(|(j, cuprob)| (r < cuprob).then_some(j))
+            .unwrap();
+        (p, probs[p])
+    }
+
+    // project the `k`-th particle into its `p`-th eigenstate with a
+    // renormalization factor without affecting any singular values
+    //
+    // assumes `k` is in bounds
+    fn project(&mut self, k: usize, p: usize, renorm: A) {
+        let zero = A::zero();
+        self.data[k]
+            .axis_iter_mut(nd::Axis(1))
+            .enumerate()
+            .for_each(|(j, mut slicej)| {
+                if j == p {
+                    slicej.map_inplace(|g| { *g /= renorm; });
+                } else {
+                    slicej.fill(zero);
+                }
+            });
+    }
+
+    /// Perform a projective measurement on the `k`-th particle, reporting the
+    /// index value of the (randomized) outcome state for that particle.
+    ///
+    /// If `k` is out of bounds, do nothing and return `None`.
+    // ///
+    // /// **Note**: This operation requires contracting the state and then
+    // /// performing a refactor on each bond in the MPS after applying the
+    // /// projective measurement. If multiple measurements are required, consider
+    // /// using [`Self::measure_multi`], which only contracts and refactors bonds
+    // /// once.
+    #[inline]
+    pub fn measure<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
+    where R: Rng + ?Sized
+    {
+        if k >= self.n { return None; }
+        let (p, prob) = self.sample_state(k, rng);
+        let renorm = A::from_re(Float::sqrt(prob));
+        self.project(k, p, renorm);
+        // self.refactor_lrsweep();
+        // self.refactor_rlsweep();
+        self.refactor_sweep();
+        Some(p)
+    }
+
+    // /// Perform a batched series of projective measurements on selected
+    // /// particles, reporting the index values of each (randomized) outcome
+    // /// states for those particles. Projections are performed and outcomes
+    // /// reported in the order the particle indices are seen.
+    // ///
+    // /// If any particle index is out of bounds, no projection is performed and
+    // /// its outcome is omitted.
+    // #[inline]
+    // pub fn measure_multi<I, R>(&mut self, particles: I, rng: &mut R)
+    //     -> Vec<usize>
+    // where
+    //     I: IntoIterator<Item = usize>,
+    //     R: Rng + ?Sized,
+    // {
+    //     let n = self.n;
+    //     let mut particles: Vec<usize>
+    //         = particles.into_iter().filter(|k| *k < n).collect();
+    //     if particles.is_empty() { return particles; }
+    //
+    //     let re_zero = <A as ComplexFloat>::Real::zero();
+    //     let mut probs: nd::ArrayD<<A as ComplexFloat>::Real>
+    //         = self.contract_nd()
+    //         .mapv(|a| (a * a.conj()).re());
+    //     particles.iter_mut()
+    //         .for_each(|k| {
+    //             let r: <A as ComplexFloat>::Real = rng.gen();
+    //             let (p, prob)
+    //                 = probs.axis_iter(nd::Axis(*k))
+    //                 .map(|slice| slice.sum())
+    //                 .scan(re_zero, |cu, pr| { *cu = *cu + pr; Some((*cu, pr)) })
+    //                 .enumerate()
+    //                 .find_map(|(j, (cu, pr))| (r < cu).then_some((j, pr)))
+    //                 .unwrap();
+    //             let renorm = A::from_re(Float::sqrt(prob));
+    //
+    //             self.project(*k, p, renorm);
+    //             probs.axis_iter_mut(nd::Axis(*k))
+    //                 .enumerate()
+    //                 .for_each(|(j, mut slice)| {
+    //                     if j == p {
+    //                         slice.map_inplace(|pr| { *pr = *pr / prob; });
+    //                     } else {
+    //                         slice.fill(re_zero);
+    //                     }
+    //                 });
+    //             *k = p;
+    //         });
+    //     self.refactor_sweep();
+    //     // self.refactor_lrsweep();
+    //     // self.refactor_rlsweep();
+    //     particles
+    // }
+}
+
+impl<T, A> MPS<T, A>
+where
+    T: Idx,
+    A: ComplexFloat + ComplexFloatExt,
+{
+    /// Convert to an unevaluated [`Network`].
+    ///
+    /// All physical indices must be unique.
     #[inline]
     pub fn into_network(self) -> Network<MPSIndex<T>, A> {
         let Self { data, outs, svals, n, .. } = self;
@@ -1561,7 +1510,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + Sum + 'static,
+    A: ComplexFloat + ComplexFloatExt + 'static,
     <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     /// Contract the MPS and convert to a single [`Tensor`] representing the
@@ -1627,7 +1576,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx + Send + 'static,
-    A: ComplexFloat + ComplexFloatExt + Sum + Send + 'static,
+    A: ComplexFloat + ComplexFloatExt + Send + 'static,
     <A as ComplexFloat>::Real: std::fmt::Debug,
 {
     /// Like [`Self::into_tensor`], but using a [`ContractorPool`] for parallel
@@ -1703,6 +1652,17 @@ where
 }
 
 impl MPS<Q, C64> {
+    /// Create a new `n`-qubit state initialized to all qubits in ∣0⟩.
+    ///
+    /// Optionally provide a global cutoff threshold for singular values, which
+    /// defaults to zero.
+    ///
+    /// Fails if `n == 0`.
+    #[inline]
+    pub fn new_qubits(n: usize, eps: Option<f64>) -> MPSResult<Self> {
+        Self::new((0..n).map(Q), eps)
+    }
+
     /// Perform the action of a gate.
     ///
     /// Does nothing if any qubit indices are out of bounds.
@@ -1768,6 +1728,76 @@ impl MPS<Q, C64> {
     }
 }
 
+fn block_indent(tab: &str, level: usize, s: &str) -> String {
+    let lines: Vec<String>
+        = s.split('\n')
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| tab.repeat(level) + line)
+        .collect();
+    lines.join("\n")
+}
+
+impl<T, A> fmt::Debug for MPS<T, A>
+where
+    T: fmt::Debug,
+    A: ComplexFloat + fmt::Debug,
+    A::Real: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const TAB: &str = "    ";
+        writeln!(f, "MPS {{")?;
+        writeln!(f, "    n: {:?},", self.n)?;
+        writeln!(f, "    data: [")?;
+        for datak in self.data.iter() {
+            writeln!(f, "{},", block_indent(TAB, 2, &format!("{datak:?}")))?;
+        }
+        writeln!(f, "    ],")?;
+        writeln!(f, "    outs: {:?},", self.outs)?;
+        writeln!(f, "    svals: [")?;
+        for svalsk in self.svals.iter() {
+            writeln!(f, "        {:?},", svalsk)?;
+        }
+        writeln!(f, "    ],")?;
+        writeln!(f, "    eps: {:?}", self.eps)?;
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
+fn fmt_array3<S, A>(
+    arr: &nd::ArrayBase<S, nd::Ix3>,
+    indent: usize,
+    indent_str: &str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result
+where
+    S: nd::Data<Elem = A>,
+    A: fmt::Display,
+{
+    let sh = arr.dim();
+    let tab = indent_str.repeat(indent);
+    write!(f, "{}", tab)?;
+    write!(f, "[")?;
+    for (i, arri) in arr.outer_iter().enumerate() {
+        if i != 0 { write!(f, "{} ", tab)?; }
+        write!(f, "[")?;
+        for (j, arrij) in arri.outer_iter().enumerate() {
+            if j != 0 { write!(f, "{}  ", tab)?; }
+            write!(f, "[")?;
+            for (k, arrijk) in arrij.iter().enumerate() {
+                arrijk.fmt(f)?;
+                if k < sh.2 - 1 { write!(f, ", ")?; }
+            }
+            write!(f, "]")?;
+            if j < sh.1 - 1 { writeln!(f, ",")?; }
+        }
+        write!(f, "]")?;
+        if i < sh.0 - 1 { writeln!(f, ",")?; }
+    }
+    write!(f, "]")?;
+    Ok(())
+}
+
 impl<T, A> fmt::Display for MPS<T, A>
 where
     T: Idx,
@@ -1782,20 +1812,17 @@ where
             writeln!(f, "Γ[{}] :: {{ <{}>, {}<{}>, <{}> }}",
                 k, sh[0], out.label(), sh[1], sh[2]
             )?;
-            g.fmt(f)?;
+            fmt_array3(g, 1, "    ", f)?;
             writeln!(f)?;
-            write!(f, "Λ[{}] = [", k)?;
-            for (j, lj) in l.iter().enumerate() {
-                lj.fmt(f)?;
-                if j < sh[2] - 1 { write!(f, ", ")?; }
-            }
-            writeln!(f, "]")?;
+            write!(f, "Λ[{}] = ", k)?;
+            l.fmt(f)?;
+            writeln!(f)?;
         }
         let sh = self.data[self.n - 1].shape();
         writeln!(f, "Γ[{}] :: {{ <{}>, {}<{}>, <{}> }}",
             self.n - 1, sh[0], self.outs[self.n - 1].label(), sh[1], sh[2]
         )?;
-        self.data[self.n - 1].fmt(f)?;
+        fmt_array3(&self.data[self.n - 1], 1, "    ", f)?;
         Ok(())
     }
 }
@@ -2120,7 +2147,7 @@ where
     let (e, v) = x.eigh(UPLO::Upper).expect("mat_ln: error in diagonalization");
     let u = v.t().mapv(|a| a.conj());
     let log_e = nd::Array2::from_diag(
-        &e.mapv(|ek| <A as ComplexFloatExt>::from_re(Float::ln(ek)))
+        &e.mapv(|ek| A::from_re(Float::ln(ek)))
     );
     v.dot(&log_e).dot(&u)
 }
@@ -2224,4 +2251,5 @@ where
         ) * prefactor
     }
 }
+
 
