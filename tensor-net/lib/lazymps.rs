@@ -9,7 +9,7 @@ use ndarray as nd;
 use num_complex::Complex64 as C64;
 use thiserror::Error;
 use crate::{
-    mps::{ MPS, MPSError },
+    mps::{ BondDim, MPS, MPSError },
     circuit::Q,
     gate::{ self, Gate },
 };
@@ -255,12 +255,12 @@ impl LazyMPS {
     /// Initialize to a separable product state of `n` qubits with each particle
     /// in ∣0⟩.
     ///
-    /// Optionally provide a global cutoff threshold for singular values, which
-    /// defaults to zero.
+    /// Optionally provide a global truncation method for discarding singular
+    /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon.
     ///
     /// Fails if `n == 0`.
-    pub fn new(n: usize, eps: Option<f64>) -> LazyResult<Self> {
-        let state = MPS::new((0..n).map(Q), eps)?;
+    pub fn new(n: usize, trunc: Option<BondDim<f64>>) -> LazyResult<Self> {
+        let state = MPS::new((0..n).map(Q), trunc)?;
         let last: Vec<Option<(usize, Operation)>>
             = (0..n).map(|_| None).collect();
         Ok(Self { n, state, ops: VecDeque::new(), depth: 0, last, eval: false })

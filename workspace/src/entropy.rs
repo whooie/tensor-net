@@ -4,6 +4,7 @@ use ndarray as nd;
 #[allow(unused_imports)]
 use rayon::iter::{ IntoParallelIterator, ParallelIterator };
 use tensor_net::circuit::*;
+use tensor_net::mps::BondDim;
 use whooie::{ mkdir, print_flush, write_npz };
 
 fn main() {
@@ -20,7 +21,8 @@ fn main() {
     // let mut s_acc: nd::Array1<f64>
     //     = (0..MC).into_par_iter()
     //     .map(|_| {
-    //         let mut circuit = MPSCircuit::new(N, Some(f64::EPSILON), None);
+    //         let mut circuit
+    //             = MPSCircuit::new(N, Some(BondDim::Cutoff(f64::EPSILON)), None);
     //         let config = CircuitConfig {
     //             depth: DepthConfig::Const(DEPTH),
     //             gates: GateConfig::Simple,
@@ -47,7 +49,8 @@ fn main() {
     let iter = s_final.iter_mut().zip(dt.iter_mut()).enumerate();
     for (k, (s_final_k, dt_k)) in iter {
         print_flush!("\r {} ", k);
-        let mut circuit = MPSCircuit::new(N, Some(f64::EPSILON), None);
+        let mut circuit
+            = MPSCircuit::new(N, Some(BondDim::Cutoff(f64::EPSILON)), None);
         let config = CircuitConfig {
             depth: DepthConfig::Const(DEPTH),
             gates: GateConfig::Simple,

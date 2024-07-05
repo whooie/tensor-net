@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use ndarray as nd;
 use tensor_net::circuit::*;
+use tensor_net::mps::BondDim;
 use whooie::{ loop_call, mkdir, write_npz };
 
 #[derive(Copy, Clone, Debug)]
@@ -14,7 +15,8 @@ fn eval_entropy(n: usize, p: f64, depth: usize, avg: usize) -> Entropy {
     let mut entropy: nd::Array1<f64> = nd::Array::zeros(avg);
     nd::Zip::from(entropy.view_mut())
         .par_for_each(move |s| {
-            let mut circuit = MPSCircuit::new(n, Some(1e-9), None);
+            let mut circuit
+                = MPSCircuit::new(n, Some(BondDim::Cutoff(1e-9)), None);
             let config = CircuitConfig {
                 depth: DepthConfig::Const(depth),
                 gates: GateConfig::Simple,

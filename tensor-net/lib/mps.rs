@@ -154,6 +154,18 @@ pub enum MPSError {
 use MPSError::*;
 pub type MPSResult<T> = Result<T, MPSError>;
 
+/// Specify a method to set the bond dimension from a Schmidt decomposition.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum BondDim<A> {
+    /// Truncate to a fixed upper bound. The resulting bond dimensions will be
+    /// *at most* this value and at least 1.
+    Const(usize),
+    /// Truncate based on a threshold imposed on Schmidt values. For threshold
+    /// value small enough, this allows the maximum bond dimension to grow
+    /// exponentially with system size.
+    Cutoff(A),
+}
+
 /// Data struct holding a Schmidt decomposition repurposed for MPS
 /// factorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,11 +188,17 @@ pub trait SchmidtDecomp<A: Scalar>:
 {
     /// Return the Schmidt decomposition of `self`, with each of the right
     /// Schmidt vectors multiplied by their respective singular values.
-    fn local_decomp(self, eps: A::Real) -> Schmidt<A>;
+    ///
+    /// `trunc` defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
+    /// `A::Real`.
+    fn local_decomp(self, trunc: Option<BondDim<<A as Scalar>::Real>>)
+        -> Schmidt<A>;
 }
 
 impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
-    fn local_decomp(self, eps: A::Real) -> Schmidt<A> {
+    fn local_decomp(self, trunc: Option<BondDim<<A as Scalar>::Real>>)
+        -> Schmidt<A>
+    {
         let (Some(u), mut s, Some(mut q)) = self.svd_into(true, true).unwrap()
             else { unreachable!() };
         let mut norm: A::Real
@@ -191,10 +209,23 @@ impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
             );
         s.map_inplace(|sj| { *sj /= norm; });
         let rank
-            = s.iter()
-            .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
-            .count()
-            .max(1);
+            = match trunc {
+                Some(BondDim::Const(r)) => r.max(1),
+                Some(BondDim::Cutoff(eps)) => {
+                    let eps = Float::abs(eps);
+                    s.iter()
+                        .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
+                        .count()
+                        .max(1)
+                },
+                None => {
+                    let eps = <A as Scalar>::Real::epsilon();
+                    s.iter()
+                        .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
+                        .count()
+                        .max(1)
+                },
+            };
         let rankslice = nd::Slice::new(0, Some(rank as isize), 1);
         s.slice_axis_inplace(nd::Axis(0), rankslice);
         norm
@@ -254,7 +285,7 @@ impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
 /// > **Note**: If the MPS will ever be converted to a [`Tensor`] or
 /// > [`Network`], then all physical indices need to be distinguishable. See
 /// > [`Idx`] for more information.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub struct MPS<T, A>
 where A: ComplexFloat
 {
@@ -272,7 +303,7 @@ where A: ComplexFloat
     // `ComplexFloatExt::from_real`.
     pub(crate) svals: Vec<nd::Array1<A::Real>>, // length n - 1
     // Threshold for singular values.
-    pub(crate) eps: A::Real,
+    pub(crate) trunc: Option<BondDim<A::Real>>,
 }
 
 impl<T, A> MPS<T, A>
@@ -283,17 +314,17 @@ where
     /// Initialize to a separable product state with each particle in the first
     /// of its available eigenstates.
     ///
-    /// Optionally provide a global cutoff threshold for singular values, which
-    /// defaults to zero.
+    /// Optionally provide a global truncation method for discarding singular
+    /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon.
     ///
     /// Fails if no physical indices are provided.
-    pub fn new<I>(indices: I, eps: Option<A::Real>) -> MPSResult<Self>
+    pub fn new<I>(indices: I, trunc: Option<BondDim<A::Real>>)
+        -> MPSResult<Self>
     where I: IntoIterator<Item = T>
     {
         let indices: Vec<T> = indices.into_iter().collect();
         if indices.is_empty() { return Err(EmptySystem); }
         if indices.iter().any(|i| i.dim() == 0) { return Err(UnphysicalIndex); }
-        let eps = Float::abs(eps.unwrap_or_else(A::Real::zero));
         let n = indices.len();
         let data: Vec<nd::Array3<A>>
             = indices.iter()
@@ -307,19 +338,20 @@ where
             = (0..n - 1)
             .map(|_| nd::array![A::Real::one()])
             .collect();
-        Ok(Self { n, data, outs: indices, svals, eps })
+        Ok(Self { n, data, outs: indices, svals, trunc })
     }
 
     /// Initialize to a separable product state with each particle wholly in one
     /// of its available eigenstates.
     ///
-    /// Optionally provide a global cutoff threshold for singular values, which
-    /// defaults to zero.
+    /// Optionally provide a global truncation method for discarding singular
+    /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon.
     ///
     /// Fails if no physical indices are provided or the given quantum number
     /// for an index exceeds the available range defined by the index's [`Idx`]
     /// implementation.
-    pub fn new_qnums<I>(indices: I, eps: Option<A::Real>) -> MPSResult<Self>
+    pub fn new_qnums<I>(indices: I, trunc: Option<BondDim<A::Real>>)
+        -> MPSResult<Self>
     where I: IntoIterator<Item = (T, usize)>
     {
         let indices: Vec<(T, usize)> = indices.into_iter().collect();
@@ -327,7 +359,6 @@ where
         if indices.iter().any(|(idx, qnum)| *qnum >= idx.dim()) {
             return Err(InvalidQuantumNumber);
         }
-        let eps = Float::abs(eps.unwrap_or_else(A::Real::zero));
         let n = indices.len();
         let data: Vec<nd::Array3<A>>
             = indices.iter()
@@ -345,7 +376,7 @@ where
             = indices.into_iter()
             .map(|(idx, _)| idx)
             .collect();
-        Ok(Self { n, data, outs: indices, svals, eps })
+        Ok(Self { n, data, outs: indices, svals, trunc })
     }
 }
 
@@ -367,8 +398,11 @@ where
     A: ComplexFloat + Scalar<Real = <A as ComplexFloat>::Real>,
     nd::Array2<A>: SchmidtDecomp<A>,
 {
-    fn factorize(outs: &[T], state: nd::Array1<A>, eps: <A as Scalar>::Real)
-        -> (Vec<nd::Array3<A>>, Vec<nd::Array1<<A as Scalar>::Real>>)
+    fn factorize(
+        outs: &[T],
+        state: nd::Array1<A>,
+        trunc: Option<BondDim<<A as Scalar>::Real>>,
+    ) -> (Vec<nd::Array3<A>>, Vec<nd::Array1<<A as Scalar>::Real>>)
     {
         let n = outs.len(); // assume n ≥ 1
         let mut data: Vec<nd::Array3<A>> = Vec::with_capacity(n);
@@ -391,7 +425,7 @@ where
 
             // svd/schmidt decomp: left vectors are columns in u, schmidt values
             // are in s, and right vectors are rows in q
-            let Schmidt { u, s, q: qp, rank } = q.local_decomp(eps);
+            let Schmidt { u, s, q: qp, rank } = q.local_decomp(trunc);
             q = qp;
             // prepare the Γ tensor from u; Γ_k = (s_{k-1})^-1 . u
             // can't slice u in place on the column index because it would mean
@@ -436,13 +470,12 @@ where
     pub fn from_vector<I, J>(
         indices: I,
         state: J,
-        eps: Option<<A as Scalar>::Real>,
+        trunc: Option<BondDim<<A as Scalar>::Real>>,
     ) -> MPSResult<Self>
     where
         I: IntoIterator<Item = T>,
         J: IntoIterator<Item = A>,
     {
-        let eps = Float::abs(eps.unwrap_or_else(<A as Scalar>::Real::zero));
         let indices: Vec<T> = indices.into_iter().collect();
         if indices.is_empty() { return Err(EmptySystem); }
         if indices.iter().any(|i| i.dim() == 0) { return Err(UnphysicalIndex); }
@@ -463,10 +496,10 @@ where
             let data: Vec<nd::Array3<A>> = vec![g];
             let svals: Vec<nd::Array1<<A as Scalar>::Real>>
                 = Vec::with_capacity(0);
-            Ok(Self { n, data, outs: indices, svals, eps })
+            Ok(Self { n, data, outs: indices, svals, trunc })
         } else {
-            let (data, svals) = Self::factorize(&indices, state, eps);
-            Ok(Self { n, data, outs: indices, svals, eps })
+            let (data, svals) = Self::factorize(&indices, state, trunc);
+            Ok(Self { n, data, outs: indices, svals, trunc })
         }
     }
 
@@ -481,11 +514,10 @@ where
     /// Fails if no particle indices are provided.
     pub fn from_tensor(
         mut state: Tensor<T, A>,
-        eps: Option<<A as Scalar>::Real>,
+        trunc: Option<BondDim<<A as Scalar>::Real>>,
     ) -> MPSResult<Self>
     where T: Ord
     {
-        let eps = Float::abs(eps.unwrap_or_else(<A as Scalar>::Real::zero));
         state.sort_indices();
         let (indices, mut state) = state.into_flat();
         if indices.is_empty() { return Err(EmptySystem); }
@@ -504,10 +536,10 @@ where
             let data: Vec<nd::Array3<A>> = vec![g];
             let svals: Vec<nd::Array1<<A as Scalar>::Real>>
                 = Vec::with_capacity(0);
-            Ok(Self { n, data, outs: indices, svals, eps })
+            Ok(Self { n, data, outs: indices, svals, trunc })
         } else {
-            let (data, svals) = Self::factorize(&indices, state, eps);
-            Ok(Self { n, data, outs: indices, svals, eps })
+            let (data, svals) = Self::factorize(&indices, state, trunc);
+            Ok(Self { n, data, outs: indices, svals, trunc })
         }
     }
 }
@@ -750,7 +782,7 @@ where
     #[inline]
     fn refactor(&mut self) {
         let q = self.contract();
-        let (data_new, svals_new) = Self::factorize(&self.outs, q, self.eps);
+        let (data_new, svals_new) = Self::factorize(&self.outs, q, self.trunc);
         self.data = data_new;
         self.svals = svals_new;
     }
@@ -764,7 +796,7 @@ where
         let shk = self.data[k].dim();
         let shkp1 = self.data[k + 1].dim();
         let Schmidt { u, s, q, rank }
-            = self.contract_local2(k).local_decomp(self.eps);
+            = self.contract_local2(k).local_decomp(self.trunc);
         let mut gk_new = u.into_shape((shk.0, shk.1, rank)).unwrap();
         if k != 0 {
             nd::Zip::from(gk_new.outer_iter_mut())
@@ -1103,7 +1135,7 @@ where
 
         let Schmidt { u, s, q, rank }
             = q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
-            .local_decomp(self.eps);
+            .local_decomp(self.trunc);
         let mut gk_new = u.into_shape((shk.0, shk.1, rank)).unwrap();
         if k != 0 {
             nd::Zip::from(gk_new.outer_iter_mut())
@@ -1659,8 +1691,12 @@ impl MPS<Q, C64> {
     ///
     /// Fails if `n == 0`.
     #[inline]
-    pub fn new_qubits(n: usize, eps: Option<f64>) -> MPSResult<Self> {
-        Self::new((0..n).map(Q), eps)
+    pub fn new_qubits(
+        n: usize,
+        trunc: Option<BondDim<f64>>,
+    ) -> MPSResult<Self>
+    {
+        Self::new((0..n).map(Q), trunc)
     }
 
     /// Perform the action of a gate.
@@ -1758,7 +1794,7 @@ where
             writeln!(f, "        {:?},", svalsk)?;
         }
         writeln!(f, "    ],")?;
-        writeln!(f, "    eps: {:?}", self.eps)?;
+        writeln!(f, "    trunc: {:?}", self.trunc)?;
         write!(f, "}}")?;
         Ok(())
     }

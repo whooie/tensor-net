@@ -9,7 +9,7 @@ use rustc_hash::FxHashSet as HashSet;
 use num_complex::Complex64 as C64;
 use crate::{
     gate::{ self, GateToken, Gate, G1, G2 },
-    mps::MPS,
+    mps::{ BondDim, MPS },
     tensor::Idx,
 };
 
@@ -190,15 +190,14 @@ impl MPSCircuit {
     /// Create a new `MPSCircuit` for a 1D chain of `n` qubits, with state
     /// initialized to ∣0...0⟩.
     ///
-    /// `eps` is an optional cutoff for singular values, defaulting to machine
-    /// epsilon. Larger `eps` will discard more singular values; `eps >= 1`
-    /// discards everything. Optionally also seed the internal random number
-    /// generator.
+    /// `trunc` is an optional global truncation method for discarding singular
+    /// values, defaulting to a [`Cutoff`][BondDim::Cutoff] at machine epsilon.
+    /// Optionally also seed the internal random number generator.
     ///
     /// *Panics* if `n` is zero.
     pub fn new(
         n: usize,
-        eps: Option<f64>,
+        trunc: Option<BondDim<f64>>,
         seed: Option<u64>,
     ) -> Self
     {
@@ -206,7 +205,7 @@ impl MPSCircuit {
         let rng
             = seed.map(StdRng::seed_from_u64)
             .unwrap_or_else(StdRng::from_entropy);
-        let state = MPS::new((0..n).map(Q), eps).unwrap();
+        let state = MPS::new((0..n).map(Q), trunc).unwrap();
         Self { state, n, rng }
     }
 
