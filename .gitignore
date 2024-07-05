@@ -5,4 +5,5 @@
 **.npz
 **.npy
 tensor-net/examples/*
+tensor-net/Cargo.lock
 **/__pycache__/*
