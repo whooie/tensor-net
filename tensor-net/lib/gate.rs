@@ -2,10 +2,15 @@
 //! [`MPS`][crate::mps::MPS] and [`MPSCircuit`][crate::circuit::MPSCircuit].
 
 use ndarray as nd;
+use ndarray_linalg::QRSquareInplace;
 use num_complex::{ ComplexFloat, Complex64 as C64 };
 use num_traits::One;
 use once_cell::sync::Lazy;
-use rand::Rng;
+use rand::{
+    Rng,
+    distributions::Distribution,
+};
+use statrs::distribution::Normal;
 use crate::ComplexFloatExt;
 
 /// A gate in a quantum circuit.
@@ -609,4 +614,28 @@ where
 
 /// Lazy-static version of [`make_cz2`] for a [`Complex64`][C64] element type.
 pub(crate) static CZTENS: Lazy<nd::Array4<C64>> = Lazy::new(make_cz2);
+
+/// Generate an `n`-qubit Haar-random unitary matrix.
+pub(crate) fn haar<A, R>(n: usize, rng: &mut R) -> nd::Array2<A>
+where
+    A: ComplexFloat + ComplexFloatExt,
+    nd::Array2<A>: QRSquareInplace<R = nd::Array2<A>>,
+    Normal: Distribution<<A as ComplexFloat>::Real>,
+    R: Rng + ?Sized,
+{
+    let normal = Normal::standard();
+    let mut z: nd::Array2<A>
+        = nd::Array2::from_shape_simple_fn(
+            (2_usize.pow(n as u32), 2_usize.pow(n as u32)),
+            || A::from_components(normal.sample(rng), normal.sample(rng)),
+        );
+    let (_, r) = z.qr_square_inplace().unwrap();
+    nd::Zip::from(z.columns_mut())
+        .and(r.diag())
+        .for_each(|mut z_j, rjj| {
+            let renorm = *rjj / A::from_re(rjj.abs());
+            z_j.map_inplace(|zij| { *zij = *zij / renorm; });
+        });
+    z
+}
 

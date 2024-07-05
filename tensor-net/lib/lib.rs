@@ -35,8 +35,11 @@ pub trait ComplexFloatExt: ComplexFloat /*+ std::fmt::Debug*/
     /// Convert from `Self::Real`.
     ///
     /// Should adhere to the usual relationship between ordinary complex and
-    /// real numbers.
+    /// real numbers, i.e. the result should have imaginary part equal to zero.
     fn from_re(x: Self::Real) -> Self;
+
+    /// Construct from real and imaginary components.
+    fn from_components(re: Self::Real, im: Self::Real) -> Self;
 
     /// Create a new value of unit magnitude with a given phase angle.
     fn cis(angle: Self::Real) -> Self;
@@ -61,6 +64,10 @@ where
 
     fn from_re(x: Self::Real) -> Self {
         Self { re: x, im: <Self::Real as Zero>::zero() }
+    }
+
+    fn from_components(re: Self::Real, im: Self::Real) -> Self {
+        Self { re, im }
     }
 
     fn cis(angle: Self::Real) -> Self { Complex::cis(angle) }

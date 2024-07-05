@@ -8,7 +8,7 @@ use rand::{ rngs::StdRng, Rng, SeedableRng };
 use rustc_hash::FxHashSet as HashSet;
 use num_complex::Complex64 as C64;
 use crate::{
-    gate::{ GateToken, Gate, G1, G2 },
+    gate::{ self, GateToken, Gate, G1, G2 },
     mps2::MPS,
     tensor::Idx,
 };
@@ -229,6 +229,13 @@ impl MPSCircuit {
         });
     }
 
+    fn apply_haars(&mut self, offs: bool) {
+        TileQ2::new(offs, self.n).for_each(|a| {
+            let u = gate::haar(2, &mut self.rng);
+            self.state.apply_unitary2(a, &u).unwrap();
+        });
+    }
+
     fn sample_gateset(
         &mut self,
         g1: &G1Set,
@@ -439,6 +446,9 @@ impl MPSCircuit {
                 GateConfig::Simple => {
                     self.sample_simple(d % 2 == 1, &mut gates);
                     self.state.apply_circuit(&gates);
+                },
+                GateConfig::Haar2 => {
+                    self.apply_haars(d % 2 == 1);
                 },
                 GateConfig::GateSet(ref g1, ref g2) => {
                     self.sample_gateset(g1, g2, d % 2 == 1, &mut gates);
@@ -699,6 +709,9 @@ impl G2Set {
 pub enum GateConfig<'a> {
     /// The "simple" set (all single-qubit gates and tiling CXs).
     Simple,
+    /// Replace distinct, overlapped one- and two-qubit unitaries with tiled
+    /// Haar-random two-qubit unitary.
+    Haar2,
     /// A particular gate set.
     GateSet(G1Set, G2Set),
     /// A particular sequence of gates.

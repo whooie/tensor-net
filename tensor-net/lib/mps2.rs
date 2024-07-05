@@ -220,8 +220,8 @@ impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
 /// A matrix product (pure) state.
 ///
 /// This is a specific case of a [`Network<T, A>`][crate::network::Network],
-/// where tensors are arranged in a 1D chain with closed boundaries, and have
-/// one physical index each.
+/// where tensors are arranged in a 1D chain with open boundaries, and have one
+/// physical index each.
 ///
 /// The MPS is maintained in a so-called "canonical" factorization based on the
 /// Schmidt decomposition. The Schmidt values are readily available at any given
