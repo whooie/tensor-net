@@ -46,7 +46,7 @@
 //! use num_traits::{ Zero, One };
 //! use rand::thread_rng;
 //! use tensor_net::mps::*;
-//! use tensor_net::tensor::Idx;
+//! use tensor_net::tensor2::Idx;
 //!
 //! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 //! struct Q(usize); // `Q(k)` is a qubit degree of freedom for the `k`-th qubit.
@@ -108,7 +108,7 @@ use ndarray_linalg::{
     types::{ Scalar, Lapack },
 };
 use num_complex::{ ComplexFloat, Complex64 as C64 };
-use num_traits::{ Float, One, Zero };
+use num_traits::{ Float, One, Zero, NumAssign };
 use once_cell::sync::Lazy;
 use rand::{
     Rng,
@@ -119,9 +119,9 @@ use crate::{
     ComplexFloatExt,
     circuit::Q,
     gate::{ self, Gate },
-    network::Network,
-    pool::ContractorPool,
-    tensor::{ Idx, Tensor },
+    network2::{ Network, Pool },
+    // pool::Pool,
+    tensor2::{ Idx, Tensor },
 };
 
 #[derive(Debug, Error)]
@@ -166,14 +166,41 @@ pub enum BondDim<A> {
     Cutoff(A),
 }
 
+/// Convenience trait to identify complex numbers that can be used in
+/// linear-algebraic operations.
+pub trait ComplexLinalgScalar
+where
+    Self:
+        ComplexFloat<Real = Self::Re>
+        + ComplexFloatExt
+        + Scalar<Real = Self::Re>
+        + Lapack,
+{
+    /// Type for associated real values.
+    type Re: Float + NumAssign;
+}
+
+impl<A> ComplexLinalgScalar for A
+where
+    A:
+        ComplexFloat<Real = <A as Scalar>::Real>
+        + ComplexFloatExt
+        + Scalar
+        + Lapack,
+{
+    type Re = <A as Scalar>::Real;
+}
+
 /// Data struct holding a Schmidt decomposition repurposed for MPS
 /// factorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Schmidt<A: Scalar> {
+pub struct Schmidt<A>
+where A: ComplexLinalgScalar
+{
     /// Matrix whose columns are the left Schmidt vectors.
     pub u: nd::Array2<A>,
     /// Vector of Schmidt values.
-    pub s: nd::Array1<A::Real>,
+    pub s: nd::Array1<A::Re>,
     /// Matrix whose rows are the right Schmidt vectors, scaled by their
     /// respective Schmidt values.
     pub q: nd::Array2<A>,
@@ -183,68 +210,79 @@ pub struct Schmidt<A: Scalar> {
 
 /// Succinctly names a complex-valued 2D array that can be factorized via
 /// Schmidt/singular value decomposition.
-pub trait SchmidtDecomp<A: Scalar>:
-    SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<<A as Scalar>::Real>, VT = nd::Array2<A>>
+pub trait SchmidtDecomp<A>
+where
+    A: ComplexLinalgScalar,
+    Self: SVDInto<U = nd::Array2<A>, Sigma = nd::Array1<A::Re>, VT = nd::Array2<A>>,
 {
     /// Return the Schmidt decomposition of `self`, with each of the right
     /// Schmidt vectors multiplied by their respective singular values.
     ///
     /// `trunc` defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
     /// `A::Real`.
-    fn local_decomp(self, trunc: Option<BondDim<<A as Scalar>::Real>>)
+    fn local_decomp(self, trunc: Option<BondDim<A::Re>>)
         -> Schmidt<A>;
 }
 
-impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
-    fn local_decomp(self, trunc: Option<BondDim<<A as Scalar>::Real>>)
-        -> Schmidt<A>
-    {
-        let (Some(u), mut s, Some(mut q)) = self.svd_into(true, true).unwrap()
+fn process_svd<A>(
+    u: nd::Array2<A>,
+    mut s: nd::Array1<A::Re>,
+    mut q: nd::Array2<A>,
+    trunc: Option<BondDim<A::Re>>,
+) -> Schmidt<A>
+where A: ComplexLinalgScalar
+{
+    let mut norm: A::Re
+        = s.iter()
+        .map(|sj| sj.powi(2))
+        .fold(A::Re::zero(), A::Re::add)
+        .sqrt();
+    s.map_inplace(|sj| { *sj /= norm; });
+    let rank
+        = match trunc {
+            Some(BondDim::Const(r)) => r.max(1),
+            Some(BondDim::Cutoff(eps)) => {
+                let eps = eps.abs();
+                s.iter()
+                    .take_while(|sj| sj.is_normal() && **sj > eps)
+                    .count()
+                    .max(1)
+            },
+            None => {
+                let eps = A::Re::epsilon();
+                s.iter()
+                    .take_while(|sj| sj.is_normal() && **sj > eps)
+                    .count()
+                    .max(1)
+            },
+        };
+    let rankslice = nd::Slice::new(0, Some(rank as isize), 1);
+    s.slice_axis_inplace(nd::Axis(0), rankslice);
+    norm
+        = s.iter()
+        .map(|sj| sj.powi(2))
+        .fold(A::Re::zero(), A::Re::add)
+        .sqrt();
+    s.map_inplace(|sj| { *sj /= norm; });
+    q.slice_axis_inplace(nd::Axis(0), rankslice);
+    let renorm = A::from_re(norm);
+    nd::Zip::from(q.axis_iter_mut(nd::Axis(0)))
+        .and(&s)
+        .for_each(|mut qv, sv| {
+            let sv_renorm = A::from_re(*sv) * renorm;
+            qv.map_inplace(|qvj| { *qvj *= sv_renorm; });
+        });
+    let u = u.slice(nd::s![.., ..rank]).to_owned();
+    Schmidt { u, s, q, rank }
+}
+
+impl<A> SchmidtDecomp<A> for nd::Array2<A>
+where A: ComplexLinalgScalar
+{
+    fn local_decomp(self, trunc: Option<BondDim<A::Re>>) -> Schmidt<A> {
+        let (Some(u), s, Some(q)) = self.svd_into(true, true).unwrap()
             else { unreachable!() };
-        let mut norm: A::Real
-            = Float::sqrt(
-                s.iter()
-                    .map(|sj| Float::powi(*sj, 2))
-                    .fold(A::Real::zero(), A::Real::add)
-            );
-        s.map_inplace(|sj| { *sj /= norm; });
-        let rank
-            = match trunc {
-                Some(BondDim::Const(r)) => r.max(1),
-                Some(BondDim::Cutoff(eps)) => {
-                    let eps = Float::abs(eps);
-                    s.iter()
-                        .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
-                        .count()
-                        .max(1)
-                },
-                None => {
-                    let eps = <A as Scalar>::Real::epsilon();
-                    s.iter()
-                        .take_while(|sj| Float::is_normal(**sj) && **sj > eps)
-                        .count()
-                        .max(1)
-                },
-            };
-        let rankslice = nd::Slice::new(0, Some(rank as isize), 1);
-        s.slice_axis_inplace(nd::Axis(0), rankslice);
-        norm
-            = Float::sqrt(
-                s.iter()
-                    .map(|sj| Float::powi(*sj, 2))
-                    .fold(A::Real::zero(), A::Real::add)
-            );
-        s.map_inplace(|sj| { *sj /= norm; });
-        q.slice_axis_inplace(nd::Axis(0), rankslice);
-        let renorm = A::from_real(norm);
-        nd::Zip::from(q.axis_iter_mut(nd::Axis(0)))
-            .and(&s)
-            .for_each(|mut qv, sv| {
-                let sv_renorm = A::from_real(*sv) * renorm;
-                qv.map_inplace(|qvj| { *qvj *= sv_renorm });
-            });
-        let u = u.slice(nd::s![.., ..rank]).to_owned();
-        Schmidt { u, s, q, rank }
+        process_svd(u, s, q, trunc)
     }
 }
 
@@ -287,7 +325,7 @@ impl<A: Scalar + Lapack> SchmidtDecomp<A> for nd::Array2<A> {
 /// > [`Idx`] for more information.
 #[derive(Clone, PartialEq)]
 pub struct MPS<T, A>
-where A: ComplexFloat
+where A: ComplexLinalgScalar
 {
     // Number of particles.
     pub(crate) n: usize, // ≥ 1
@@ -299,17 +337,16 @@ where A: ComplexFloat
     pub(crate) data: Vec<nd::Array3<A>>, // length n
     // Physical indices.
     pub(crate) outs: Vec<T>, // length n
-    // Singular values. When contracting with `data` tensors, use
-    // `ComplexFloatExt::from_real`.
-    pub(crate) svals: Vec<nd::Array1<A::Real>>, // length n - 1
+    // Singular values.
+    pub(crate) svals: Vec<nd::Array1<A::Re>>, // length n - 1
     // Threshold for singular values.
-    pub(crate) trunc: Option<BondDim<A::Real>>,
+    pub(crate) trunc: Option<BondDim<A::Re>>,
 }
 
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat,
+    A: ComplexLinalgScalar,
 {
     /// Initialize to a separable product state with each particle in the first
     /// of its available eigenstates.
@@ -318,7 +355,7 @@ where
     /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon.
     ///
     /// Fails if no physical indices are provided.
-    pub fn new<I>(indices: I, trunc: Option<BondDim<A::Real>>)
+    pub fn new<I>(indices: I, trunc: Option<BondDim<A::Re>>)
         -> MPSResult<Self>
     where I: IntoIterator<Item = T>
     {
@@ -334,9 +371,9 @@ where
                 g
             })
             .collect();
-        let svals: Vec<nd::Array1<A::Real>>
+        let svals: Vec<nd::Array1<A::Re>>
             = (0..n - 1)
-            .map(|_| nd::array![A::Real::one()])
+            .map(|_| nd::array![A::Re::one()])
             .collect();
         Ok(Self { n, data, outs: indices, svals, trunc })
     }
@@ -350,7 +387,7 @@ where
     /// Fails if no physical indices are provided or the given quantum number
     /// for an index exceeds the available range defined by the index's [`Idx`]
     /// implementation.
-    pub fn new_qnums<I>(indices: I, trunc: Option<BondDim<A::Real>>)
+    pub fn new_qnums<I>(indices: I, trunc: Option<BondDim<A::Re>>)
         -> MPSResult<Self>
     where I: IntoIterator<Item = (T, usize)>
     {
@@ -368,9 +405,9 @@ where
                 g
             })
             .collect();
-        let svals: Vec<nd::Array1<A::Real>>
+        let svals: Vec<nd::Array1<A::Re>>
             = (0..n - 1)
-            .map(|_| nd::array![A::Real::one()])
+            .map(|_| nd::array![A::Re::one()])
             .collect();
         let indices: Vec<T>
             = indices.into_iter()
@@ -381,7 +418,7 @@ where
 }
 
 impl<T, A> MPS<T, A>
-where A: ComplexFloat
+where A: ComplexLinalgScalar
 {
     /// Return the number of particles.
     #[inline]
@@ -395,18 +432,18 @@ where A: ComplexFloat
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + Scalar<Real = <A as ComplexFloat>::Real>,
+    A: ComplexLinalgScalar,
     nd::Array2<A>: SchmidtDecomp<A>,
 {
     fn factorize(
         outs: &[T],
         state: nd::Array1<A>,
-        trunc: Option<BondDim<<A as Scalar>::Real>>,
-    ) -> (Vec<nd::Array3<A>>, Vec<nd::Array1<<A as Scalar>::Real>>)
+        trunc: Option<BondDim<A::Re>>,
+    ) -> (Vec<nd::Array3<A>>, Vec<nd::Array1<A::Re>>)
     {
         let n = outs.len(); // assume n ≥ 1
         let mut data: Vec<nd::Array3<A>> = Vec::with_capacity(n);
-        let mut svals: Vec<nd::Array1<<A as Scalar>::Real>>
+        let mut svals: Vec<nd::Array1<A::Re>>
             = Vec::with_capacity(n - 1);
         let mut udim: usize = 1;
         let mut outdim: usize;
@@ -470,7 +507,7 @@ where
     pub fn from_vector<I, J>(
         indices: I,
         state: J,
-        trunc: Option<BondDim<<A as Scalar>::Real>>,
+        trunc: Option<BondDim<A::Re>>,
     ) -> MPSResult<Self>
     where
         I: IntoIterator<Item = T>,
@@ -494,8 +531,7 @@ where
                 = nd::Array::zeros((1, indices[0].dim(), 1));
             state.move_into(g.slice_mut(nd::s![0, .., 0]));
             let data: Vec<nd::Array3<A>> = vec![g];
-            let svals: Vec<nd::Array1<<A as Scalar>::Real>>
-                = Vec::with_capacity(0);
+            let svals: Vec<nd::Array1<A::Re>> = Vec::with_capacity(0);
             Ok(Self { n, data, outs: indices, svals, trunc })
         } else {
             let (data, svals) = Self::factorize(&indices, state, trunc);
@@ -514,7 +550,7 @@ where
     /// Fails if no particle indices are provided.
     pub fn from_tensor(
         mut state: Tensor<T, A>,
-        trunc: Option<BondDim<<A as Scalar>::Real>>,
+        trunc: Option<BondDim<A::Re>>,
     ) -> MPSResult<Self>
     where T: Ord
     {
@@ -532,20 +568,20 @@ where
         if n == 1 {
             let mut g: nd::Array3<A>
                 = nd::Array::zeros((1, indices[0].dim(), 1));
-            state.move_into(g.slice_mut(nd::s![0, .., 0]));
+            state.into_owned().move_into(g.slice_mut(nd::s![0, .., 0]));
             let data: Vec<nd::Array3<A>> = vec![g];
-            let svals: Vec<nd::Array1<<A as Scalar>::Real>>
-                = Vec::with_capacity(0);
+            let svals: Vec<nd::Array1<A::Re>> = Vec::with_capacity(0);
             Ok(Self { n, data, outs: indices, svals, trunc })
         } else {
-            let (data, svals) = Self::factorize(&indices, state, trunc);
+            let (data, svals)
+                = Self::factorize(&indices, state.into_owned(), trunc);
             Ok(Self { n, data, outs: indices, svals, trunc })
         }
     }
 }
 
 impl<T, A> MPS<T, A>
-where A: ComplexFloat + ComplexFloatExt + 'static
+where A: ComplexLinalgScalar + 'static
 {
     // do a single contraction between two particles' gamma matrices
     //
@@ -561,7 +597,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
     #[inline]
     fn do_contract2(
         l: &nd::Array3<A>,
-        s: &nd::Array1<A::Real>,
+        s: &nd::Array1<A::Re>,
         r: &nd::Array3<A>,
     ) -> nd::Array2<A>
     {
@@ -600,7 +636,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
     #[inline]
     fn do_contract3(
         l: &nd::Array3<A>,
-        s: &nd::Array1<A::Real>,
+        s: &nd::Array1<A::Re>,
         r: &nd::Array3<A>,
     ) -> nd::Array3<A>
     {
@@ -622,7 +658,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
     #[inline]
     fn do_contract4(
         l: &nd::Array3<A>,
-        s: &nd::Array1<A::Real>,
+        s: &nd::Array1<A::Re>,
         r: &nd::Array3<A>,
     ) -> nd::Array4<A>
     {
@@ -635,7 +671,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
 
     // contraction via binary division as a rough heuristic to minimize runtime
     // at the cost of having to allocate intermediate results
-    fn do_contract_multi(data: &[nd::Array3<A>], svals: &[nd::Array1<A::Real>])
+    fn do_contract_multi(data: &[nd::Array3<A>], svals: &[nd::Array1<A::Re>])
         -> nd::Array3<A>
     {
         match data.len() {
@@ -680,7 +716,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
                 .and(&self.svals[k - 1])
                 .for_each(|mut qv__, lkm1v| {
                     let lkm1v = A::from_re(*lkm1v);
-                    qv__.map_inplace(|qvsw| { *qvsw = *qvsw * lkm1v; });
+                    qv__.map_inplace(|qvsw| { *qvsw *= lkm1v; });
                 });
         }
         if k != self.n - 2 {
@@ -688,7 +724,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
                 .and(&self.svals[k + 1])
                 .for_each(|mut q__w, lkp1w| {
                     let lkp1w = A::from_re(*lkp1w);
-                    q__w.map_inplace(|qvsw| { *qvsw = *qvsw * lkp1w; });
+                    q__w.map_inplace(|qvsw| { *qvsw *= lkp1w; });
                 });
         }
         q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
@@ -752,7 +788,7 @@ where A: ComplexFloat + ComplexFloatExt + 'static
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + 'static
+    A: ComplexLinalgScalar + 'static
 {
     /// Return the contraction of `self` into a rank-N tensor.
     #[inline]
@@ -774,7 +810,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + Scalar<Real = <A as ComplexFloat>::Real> + 'static,
+    A: ComplexLinalgScalar + 'static,
     nd::Array2<A>: SchmidtDecomp<A>,
 {
     // perform a contraction of the total state and repeat the initial
@@ -850,7 +886,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + 'static,
+    A: ComplexLinalgScalar + 'static,
 {
     /// Evaluate the expectation value of a local operator acting (only) on the
     /// `k`-th particle.
@@ -884,13 +920,13 @@ where
                                 .and(lk)
                                 .fold(A::zero(), |acc, gk0tw, gk0sw, lkw| {
                                     gk0tw.conj() * *gk0sw
-                                        * A::from_re(Float::powi(*lkw, 2))
+                                        * A::from_re(lkw.powi(2))
                                     + acc
                                 })
                                 * *opts
-                                + acc
+                            + acc
                         })
-                        + acc
+                    + acc
                 });
             Ok(ev)
         } else if k == self.n - 1 {
@@ -908,15 +944,15 @@ where
                             nd::Zip::from(gkv_0)
                                 .and(opt_)
                                 .fold(A::zero(), |acc, gkvs0, opts| {
-                                    A::from_re(Float::powi(*lkm1v, 2))
+                                    A::from_re(lkm1v.powi(2))
                                         * gkvt0.conj() * *gkvs0
                                         * *opts
                                     + acc
                                 })
-                                + acc
+                            + acc
                         })
-                        * A::from_re(Float::powi(*lkm1v, 2))
-                        + acc
+                        * A::from_re(lkm1v.powi(2))
+                    + acc
                 });
             Ok(ev)
         } else {
@@ -939,16 +975,16 @@ where
                                         .and(lk)
                                         .fold(A::zero(), |acc, gkvtw, gkvsw, lkw| {
                                             gkvtw.conj() * *gkvsw
-                                                * A::from_re(Float::powi(*lkw, 2))
+                                                * A::from_re(lkw.powi(2))
                                             + acc
                                         })
                                         * *opts
-                                        + acc
+                                    + acc
                                 })
-                                + acc
+                            + acc
                         })
-                        * A::from_re(Float::powi(*lkm1v, 2))
-                        + acc
+                        * A::from_re(lkm1v.powi(2))
+                    + acc
                 });
             Ok(ev)
         }
@@ -961,53 +997,56 @@ where
         if k == 0 {
             let gk0__ = &self.data[k].slice(nd::s![0, .., ..]);
             let lk = &self.svals[k];
-            gk0__.outer_iter()
-                .map(|gk0s_| {
-                    nd::Zip::from(gk0s_)
-                        .and(lk)
-                        .fold(A::zero(), |acc, gk0sw, lkw| {
-                            gk0sw.conj() * *gk0sw
-                                * A::from_re(Float::powi(*lkw, 2))
-                            + acc
-                        })
-                })
-                .fold(A::zero(), A::add)
-                .sqrt()
+            ComplexFloat::sqrt(
+                gk0__.outer_iter()
+                    .map(|gk0s_| {
+                        nd::Zip::from(gk0s_)
+                            .and(lk)
+                            .fold(A::zero(), |acc, gk0sw, lkw| {
+                                gk0sw.conj() * *gk0sw
+                                    * A::from_re(lkw.powi(2))
+                                + acc
+                            })
+                    })
+                    .fold(A::zero(), A::add)
+            )
         } else if k == self.n - 1 {
             let lkm1 = &self.svals[k - 1];
             let gk__0 = &self.data[k].slice(nd::s![.., .., 0]);
-            nd::Zip::from(gk__0.outer_iter())
-                .and(lkm1)
-                .fold(A::zero(), |acc, gkv_0, lkm1v| {
-                    gkv_0.iter()
-                        .map(|gkvs0| gkvs0.conj() * *gkvs0)
-                        .fold(A::zero(), A::add)
-                        * A::from_re(Float::powi(*lkm1v, 2))
-                    + acc
-                })
-                .sqrt()
+            ComplexFloat::sqrt(
+                nd::Zip::from(gk__0.outer_iter())
+                    .and(lkm1)
+                    .fold(A::zero(), |acc, gkv_0, lkm1v| {
+                        gkv_0.iter()
+                            .map(|gkvs0| gkvs0.conj() * *gkvs0)
+                            .fold(A::zero(), A::add)
+                            * A::from_re(lkm1v.powi(2))
+                        + acc
+                    })
+            )
         } else {
             let lkm1 = &self.svals[k - 1];
             let gk = &self.data[k];
             let lk = &self.svals[k];
-            nd::Zip::from(gk.outer_iter())
-                .and(lkm1)
-                .fold(A::zero(), |acc, gkv__, lkm1v| {
-                    gkv__.outer_iter()
-                        .map(|gkvs_| {
-                            nd::Zip::from(gkvs_)
-                                .and(lk)
-                                .fold(A::zero(), |acc, gkvsw, lkw| {
-                                    gkvsw.conj() * *gkvsw
-                                        * A::from_re(Float::powi(*lkw, 2))
-                                    + acc
-                                })
-                        })
-                        .fold(A::zero(), A::add)
-                        * A::from_re(Float::powi(*lkm1v, 2))
-                    + acc
-                })
-                .sqrt()
+            ComplexFloat::sqrt(
+                nd::Zip::from(gk.outer_iter())
+                    .and(lkm1)
+                    .fold(A::zero(), |acc, gkv__, lkm1v| {
+                        gkv__.outer_iter()
+                            .map(|gkvs_| {
+                                nd::Zip::from(gkvs_)
+                                    .and(lk)
+                                    .fold(A::zero(), |acc, gkvsw, lkw| {
+                                        gkvsw.conj() * *gkvsw
+                                            * A::from_re(lkw.powi(2))
+                                        + acc
+                                    })
+                            })
+                            .fold(A::zero(), A::add)
+                            * A::from_re(lkm1v.powi(2))
+                        + acc
+                    })
+            )
         }
     }
 
@@ -1016,29 +1055,29 @@ where
     #[inline]
     fn local_renormalize(&mut self, k: usize) {
         let norm = self.local_norm(k);
-        self.data[k].map_inplace(|gkvsu| { *gkvsu = *gkvsu / norm; });
+        self.data[k].map_inplace(|gkvsu| { *gkvsu /= norm; });
     }
 }
 
 impl<T, A> MPS<T, A>
-where A: ComplexFloat
+where A: ComplexLinalgScalar
 {
     /// Compute the Von Neumann entropy for a bipartition placed on the `b`-th
     /// bond.
     ///
     /// Returns `None` if `b` is out of bounds.
     #[inline]
-    pub fn entropy_vn(&self, b: usize) -> Option<A::Real> {
-        let zero = A::Real::zero();
+    pub fn entropy_vn(&self, b: usize) -> Option<A::Re> {
+        let zero = A::Re::zero();
         self.svals.get(b)
             .map(|s| {
                 s.iter().copied()
                     .filter(|sk| *sk > zero)
                     .map(|sk| {
                         let sk2 = sk * sk;
-                        -sk2 * Float::ln(sk2)
+                        -sk2 * sk2.ln()
                     })
-                    .fold(zero, A::Real::add)
+                    .fold(zero, A::Re::add)
             })
     }
 
@@ -1048,18 +1087,19 @@ where A: ComplexFloat
     /// Returns the Von Neumann entropy for `a == 1` and `None` if `b` is out of
     /// bounds.
     #[inline]
-    pub fn entropy_ry_schmidt(&self, a: A::Real, b: usize) -> Option<A::Real> {
-        let one = A::Real::one();
+    pub fn entropy_ry_schmidt(&self, a: A::Re, b: usize) -> Option<A::Re> {
+        let one = A::Re::one();
         if a == one {
             self.entropy_vn(b)
         } else {
             self.svals.get(b)
                 .map(|s| {
-                    Float::ln(
-                        s.iter().copied()
-                            .map(|sk| Float::powf(sk * sk, a))
-                            .fold(A::Real::zero(), A::Real::add)
-                    ) * Float::recip(one - a)
+                    s.iter()
+                        .copied()
+                        .map(|sk| (sk * sk).powf(a))
+                        .fold(A::Re::zero(), A::Re::add)
+                        .ln()
+                        * (one - a).recip()
                 })
         }
     }
@@ -1068,7 +1108,7 @@ where A: ComplexFloat
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + 'static,
+    A: ComplexLinalgScalar + 'static,
 {
     /// Apply a unitary transformation to the `k`-th particle.
     ///
@@ -1100,7 +1140,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + Scalar<Real = <A as ComplexFloat>::Real> + 'static,
+    A: ComplexLinalgScalar + 'static,
     nd::Array2<A>: SchmidtDecomp<A>,
 {
     /// Apply a unitary operator to the `k`-th and `k + 1`-th particles.
@@ -1172,21 +1212,20 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + Scalar<Real = <A as ComplexFloat>::Real> + 'static,
+    A: ComplexLinalgScalar + 'static,
     nd::Array2<A>: SchmidtDecomp<A>,
-    Standard: Distribution<<A as ComplexFloat>::Real>,
+    Standard: Distribution<A::Re>,
 {
     // calculate the state probabilities for the `k`-th particle and randomly
     // sample one from that distribution, returning the quantum number and its
     // probability
     //
     // assumes `k` is in bounds
-    fn sample_state<R>(&self, k: usize, rng: &mut R)
-        -> (usize, <A as ComplexFloat>::Real)
+    fn sample_state<R>(&self, k: usize, rng: &mut R) -> (usize, A::Re)
     where R: Rng + ?Sized
     {
-        let r: <A as ComplexFloat>::Real = rng.gen();
-        let probs: Vec<<A as ComplexFloat>::Real>;
+        let r: A::Re = rng.gen();
+        let probs: Vec<A::Re>;
         if self.n == 1 {
             probs
                 = self.data[k].iter()
@@ -1200,11 +1239,9 @@ where
                 .map(|gk0s_| {
                     nd::Zip::from(gk0s_)
                         .and(lk)
-                        .fold(
-                            <A as ComplexFloat>::Real::zero(),
-                            |acc, gk0su, lku| {
+                        .fold(A::Re::zero(), |acc, gk0su, lku| {
                                 (gk0su.conj() * *gk0su).re()
-                                    * Float::powi(*lku, 2)
+                                    * lku.powi(2)
                                 + acc
                             },
                         )
@@ -1218,11 +1255,9 @@ where
                 .map(|gk_s0| {
                     nd::Zip::from(gk_s0)
                         .and(lkm1)
-                        .fold(
-                            <A as ComplexFloat>::Real::zero(),
-                            |acc, gkus0, lkm1u| {
+                        .fold(A::Re::zero(), |acc, gkus0, lkm1u| {
                                 (gkus0.conj() * *gkus0).re()
-                                    * Float::powi(*lkm1u, 2)
+                                    * lkm1u.powi(2)
                                 + acc
                             },
                         )
@@ -1237,20 +1272,16 @@ where
                 .map(|gk_s_| {
                     nd::Zip::from(gk_s_.outer_iter())
                         .and(lkm1)
-                        .fold(
-                            <A as ComplexFloat>::Real::zero(),
-                            |acc, gkvs_, lkm1v| {
+                        .fold(A::Re::zero(), |acc, gkvs_, lkm1v| {
                                 nd::Zip::from(gkvs_)
                                     .and(lk)
-                                    .fold(
-                                        <A as ComplexFloat>::Real::zero(),
-                                        |acc, gkvsu, lku| {
+                                    .fold(A::Re::zero(), |acc, gkvsu, lku| {
                                             (gkvsu.conj() * *gkvsu).re()
-                                                * Float::powi(*lku, 2)
+                                                * lku.powi(2)
                                             + acc
                                         },
                                     )
-                                    * Float::powi(*lkm1v, 2)
+                                    * lkm1v.powi(2)
                                 + acc
                             },
                         )
@@ -1259,10 +1290,7 @@ where
         }
         let p
             = probs.iter().copied()
-            .scan(
-                <A as ComplexFloat>::Real::zero(),
-                |cu, pr| { *cu = *cu + pr; Some(*cu) }
-            )
+            .scan(A::Re::zero(), |cu, pr| { *cu += pr; Some(*cu) })
             .enumerate()
             .find_map(|(j, cuprob)| (r < cuprob).then_some(j))
             .unwrap();
@@ -1303,7 +1331,7 @@ where
     {
         if k >= self.n { return None; }
         let (p, prob) = self.sample_state(k, rng);
-        let renorm = A::from_re(Float::sqrt(prob));
+        let renorm = A::from_re(prob.sqrt());
         self.project(k, p, renorm);
         // self.refactor_lrsweep();
         // self.refactor_rlsweep();
@@ -1368,7 +1396,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt,
+    A: ComplexLinalgScalar,
 {
     /// Convert to an unevaluated [`Network`].
     ///
@@ -1542,8 +1570,8 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + ComplexFloatExt + 'static,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
+    A: ComplexLinalgScalar + 'static,
+    // A::Re: std::fmt::Debug,
 {
     /// Contract the MPS and convert to a single [`Tensor`] representing the
     /// pure state.
@@ -1584,14 +1612,12 @@ where
     /// Contract the MPS into a density matrix and compute the `a`-th Rényi
     /// entropy of a subspace.
     #[inline]
-    pub fn entropy_ry(&self, a: u32, part: Range<usize>)
-        -> <A as ComplexFloat>::Real
+    pub fn entropy_ry(&self, a: u32, part: Range<usize>) -> A::Re
     where
         T: Ord,
-        A: Scalar + Lapack,
         nd::Array2<A>:
-        Eigh<EigVal = nd::Array1<<A as ComplexFloat>::Real>, EigVec = nd::Array2<A>>
-        + nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
+            Eigh<EigVal = nd::Array1<A::Re>, EigVec = nd::Array2<A>>
+            + nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
     {
         let mut rho_tens = self.clone().into_tensor_part(part);
         rho_tens.sort_indices();
@@ -1600,7 +1626,9 @@ where
             = indices.iter()
             .map(|idx| idx.dim())
             .product();
-        let rho: nd::Array2<A> = data.into_shape((sidelen, sidelen)).unwrap();
+        let rho: nd::Array2<A>
+            = data.reshape((sidelen, sidelen))
+            .into_owned();
         entropy_ry(&rho, a)
     }
 }
@@ -1608,13 +1636,13 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx + Send + 'static,
-    A: ComplexFloat + ComplexFloatExt + Send + 'static,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
+    A: ComplexLinalgScalar + Send + Sync + 'static,
+    // A::Re: std::fmt::Debug,
 {
-    /// Like [`Self::into_tensor`], but using a [`ContractorPool`] for parallel
+    /// Like [`Self::into_tensor`], but using a [`Pool`] for parallel
     /// contractions.
     #[inline]
-    pub fn into_tensor_par(self, pool: &ContractorPool<MPSIndex<T>, A>)
+    pub fn into_tensor_par(self, pool: &Pool<MPSIndex<T>, A>)
         -> Tensor<T, A>
     {
         let tens
@@ -1624,12 +1652,12 @@ where
         unsafe { tens.map_indices(MPSIndex::into_physical) }
     }
 
-    /// Like [`Self::into_tensor_density`], but using a [`ContractorPool`] for
+    /// Like [`Self::into_tensor_density`], but using a [`Pool`] for
     /// parallel contractions.
     #[inline]
     pub fn into_tensor_density_par(
         self,
-        pool: &ContractorPool<MPSMatIndex<T>, A>,
+        pool: &Pool<MPSMatIndex<T>, A>,
     ) -> Tensor<MatIndex<T>, A>
     {
         let dens
@@ -1639,13 +1667,13 @@ where
         unsafe { dens.map_indices(MPSMatIndex::into_physical) }
     }
 
-    /// Like [`Self::into_tensor_part`], but using a [`ContractorPool`] for
+    /// Like [`Self::into_tensor_part`], but using a [`Pool`] for
     /// parallel contractions.
     #[inline]
     pub fn into_tensor_part_par(
         self,
         part: Range<usize>,
-        pool: &ContractorPool<MPSMatIndex<T>, A>,
+        pool: &Pool<MPSMatIndex<T>, A>,
     ) -> Tensor<MatIndex<T>, A>
     {
         let dens
@@ -1655,21 +1683,20 @@ where
         unsafe { dens.map_indices(MPSMatIndex::into_physical) }
     }
 
-    /// Like [`Self::entropy_ry`], but using a [`ContractorPool`] for parallel
+    /// Like [`Self::entropy_ry`], but using a [`Pool`] for parallel
     /// contractions.
     #[inline]
     pub fn entropy_ry_par(
         &self,
         a: u32,
         part: Range<usize>,
-        pool: &ContractorPool<MPSMatIndex<T>, A>,
-    ) -> <A as ComplexFloat>::Real
+        pool: &Pool<MPSMatIndex<T>, A>,
+    ) -> A::Re
     where
         T: Ord,
-        A: Scalar + Lapack,
         nd::Array2<A>:
-        Eigh<EigVal = nd::Array1<<A as ComplexFloat>::Real>, EigVec = nd::Array2<A>>
-        + nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
+            Eigh<EigVal = nd::Array1<A::Re>, EigVec = nd::Array2<A>>
+            + nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
     {
         let mut rho_tens = self.clone().into_tensor_part_par(part, pool);
         rho_tens.sort_indices();
@@ -1678,7 +1705,9 @@ where
             = indices.iter()
             .map(|idx| idx.dim())
             .product();
-        let rho: nd::Array2<A> = data.into_shape((sidelen, sidelen)).unwrap();
+        let rho: nd::Array2<A>
+            = data.reshape((sidelen, sidelen))
+            .into_owned();
         entropy_ry(&rho, a)
     }
 }
@@ -1776,8 +1805,8 @@ fn block_indent(tab: &str, level: usize, s: &str) -> String {
 impl<T, A> fmt::Debug for MPS<T, A>
 where
     T: fmt::Debug,
-    A: ComplexFloat + fmt::Debug,
-    A::Real: fmt::Debug,
+    A: ComplexLinalgScalar + fmt::Debug,
+    A::Re: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         const TAB: &str = "    ";
@@ -1837,8 +1866,8 @@ where
 impl<T, A> fmt::Display for MPS<T, A>
 where
     T: Idx,
-    A: ComplexFloat + fmt::Display,
-    A::Real: fmt::Display,
+    A: ComplexLinalgScalar + fmt::Display,
+    A::Re: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let iter
@@ -2176,14 +2205,14 @@ impl<T> MPSMatIndex<T> {
 // panics of the matrix is not Hermitian
 pub(crate) fn mat_ln<A>(x: &nd::Array2<A>) -> nd::Array2<A>
 where
-    A: ComplexFloat + ComplexFloatExt + Scalar + Lapack,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
-    nd::Array2<A>: Eigh<EigVal = nd::Array1<<A as ComplexFloat>::Real>, EigVec = nd::Array2<A>>,
+    A: ComplexLinalgScalar,
+    // A::Re: std::fmt::Debug,
+    nd::Array2<A>: Eigh<EigVal = nd::Array1<A::Re>, EigVec = nd::Array2<A>>,
 {
     let (e, v) = x.eigh(UPLO::Upper).expect("mat_ln: error in diagonalization");
     let u = v.t().mapv(|a| a.conj());
     let log_e = nd::Array2::from_diag(
-        &e.mapv(|ek| A::from_re(Float::ln(ek)))
+        &e.mapv(|ek| A::from_re(ek.ln()))
     );
     v.dot(&log_e).dot(&u)
 }
@@ -2193,9 +2222,9 @@ where
 // expecting most cases to use n < 5
 pub(crate) fn mat_pow<A>(x: &nd::Array2<A>, n: u32) -> nd::Array2<A>
 where
-    A: ComplexFloat + ComplexFloatExt,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
-    nd::Array2<A>: nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>> + Clone
+    A: ComplexLinalgScalar,
+    // A::Re: std::fmt::Debug,
+    nd::Array2<A>: nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
 {
     if !x.is_square() { panic!("mat_pow: non-square matrix"); }
     match n {
@@ -2236,55 +2265,49 @@ where
 /// Compute the Von Neumann entropy of a density matrix.
 ///
 /// The input must be a valid density matrix, but can be pure or mixed.
-pub fn entropy_vn<A>(rho: &nd::Array2<A>) -> <A as ComplexFloat>::Real
+pub fn entropy_vn<A>(rho: &nd::Array2<A>) -> A::Re
 where
-    A: ComplexFloat + ComplexFloatExt + Scalar + Lapack,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
+    A: ComplexLinalgScalar,
+    // A::Re: std::fmt::Debug,
     nd::Array2<A>:
-        Eigh<EigVal = nd::Array1<<A as ComplexFloat>::Real>, EigVec = nd::Array2<A>>
+        Eigh<EigVal = nd::Array1<A::Re>, EigVec = nd::Array2<A>>
         + nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
 {
     rho.dot(&mat_ln(rho))
         .diag().iter().copied()
         .map(ComplexFloat::re)
-        .fold(
-            <A as ComplexFloat>::Real::zero(),
-            <A as ComplexFloat>::Real::add,
-        ) * (-<A as ComplexFloat>::Real::one())
+        .fold(A::Re::zero(), A::Re::add)
+        * (-A::Re::one())
 }
 
 /// Compute the *n*-th Rényi entropy of a density matrix.
 ///
 /// Returns the [Von Neumann entropy][entropy_vn] if `n == 1`. The input must be
 /// a valid density matrix, but can be pure or mixed.
-pub fn entropy_ry<A>(rho: &nd::Array2<A>, n: u32) -> <A as ComplexFloat>::Real
+pub fn entropy_ry<A>(rho: &nd::Array2<A>, n: u32) -> A::Re
 where
-    A: ComplexFloat + ComplexFloatExt + Scalar + Lapack,
-    <A as ComplexFloat>::Real: std::fmt::Debug,
+    A: ComplexLinalgScalar,
+    // A::Re: std::fmt::Debug,
     nd::Array2<A>:
-        Eigh<EigVal = nd::Array1<<A as ComplexFloat>::Real>, EigVec = nd::Array2<A>>
+        Eigh<EigVal = nd::Array1<A::Re>, EigVec = nd::Array2<A>>
         + nd::linalg::Dot<nd::Array2<A>, Output = nd::Array2<A>>,
 {
     if n == 1 {
         entropy_vn(rho)
     } else {
-        let nfloat: <A as ComplexFloat>::Real
+        let nfloat: A::Re
             = (0..n)
-            .map(|_| <A as ComplexFloat>::Real::one())
-            .fold(
-                <A as ComplexFloat>::Real::zero(),
-                <A as ComplexFloat>::Real::add,
-            );
-        let prefactor = Float::recip(<A as ComplexFloat>::Real::one() - nfloat);
-        Float::ln(
-            mat_pow(rho, n)
-                .diag().iter().copied()
-                .map(ComplexFloat::re)
-                .fold(
-                    <A as ComplexFloat>::Real::zero(),
-                    <A as ComplexFloat>::Real::add,
-                )
-        ) * prefactor
+            .map(|_| A::Re::one())
+            .fold(A::Re::zero(), A::Re::add);
+        let prefactor = (A::Re::one() - nfloat).recip();
+        mat_pow(rho, n)
+            .diag()
+            .iter()
+            .copied()
+            .map(ComplexFloat::re)
+            .fold(A::Re::zero(), A::Re::add)
+            .ln()
+            * prefactor
     }
 }
 
