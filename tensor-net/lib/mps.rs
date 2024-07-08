@@ -46,7 +46,7 @@
 //! use num_traits::{ Zero, One };
 //! use rand::thread_rng;
 //! use tensor_net::mps::*;
-//! use tensor_net::tensor2::Idx;
+//! use tensor_net::tensor3::Idx;
 //!
 //! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 //! struct Q(usize); // `Q(k)` is a qubit degree of freedom for the `k`-th qubit.
@@ -119,9 +119,9 @@ use crate::{
     ComplexFloatExt,
     circuit::Q,
     gate::{ self, Gate },
-    network2::{ Network, Pool },
+    network3::{ Network, Pool },
     // pool::Pool,
-    tensor2::{ Idx, Tensor },
+    tensor3::{ Idx, Tensor },
 };
 
 #[derive(Debug, Error)]
@@ -580,9 +580,105 @@ where
     }
 }
 
-impl<T, A> MPS<T, A>
-where A: ComplexLinalgScalar + 'static
+#[inline]
+fn do_contract_local_2<A>(
+    ls: Option<&nd::Array1<A::Re>>,
+    l: &nd::Array3<A>,
+    s: &nd::Array1<A::Re>,
+    r: &nd::Array3<A>,
+    rs: Option<&nd::Array1<A::Re>>,
+) -> nd::Array2<A>
+where A: ComplexLinalgScalar
 {
+    let mut l = l.as_standard_layout();
+    if let Some(ls) = ls {
+        nd::Zip::from(l.axis_iter_mut(nd::Axis(0)))
+            .and(ls)
+            .for_each(|mut gv__, lsv| {
+                let lsv = A::from_re(*lsv);
+                gv__.map_inplace(|gvsu| { *gvsu *= lsv; });
+            });
+    }
+    let mut r = r.as_standard_layout();
+    if let Some(rs) = rs {
+        nd::Zip::from(r.axis_iter_mut(nd::Axis(2)))
+            .and(rs)
+            .for_each(|mut g__w, rsw| {
+                let rsw = A::from_re(*rsw);
+                g__w.map_inplace(|g__w| { *g__w *= rsw; });
+            });
+    }
+    nd::Zip::from(r.axis_iter_mut(nd::Axis(0)))
+        .and(s)
+        .for_each(|mut gu__, su| {
+            let su = A::from_re(*su);
+            gu__.map_inplace(|gusw| { *gusw *= su; });
+        });
+    let shl = l.dim();
+    let l = l.into_shape((shl.0 * shl.1, shl.2)).unwrap();
+    let shr = r.dim();
+    let r = r.into_shape((shr.0, shr.1 * shr.2)).unwrap();
+    l.dot(&r)
+}
+
+#[inline]
+fn do_contract_local_3<A>(
+    ls: Option<&nd::Array1<A::Re>>,
+    l: &nd::Array3<A>,
+    s: &nd::Array1<A::Re>,
+    r: &nd::Array3<A>,
+    rs: Option<&nd::Array1<A::Re>>,
+) -> nd::Array3<A>
+where A: ComplexLinalgScalar
+{
+    let shl = l.dim();
+    let shr = r.dim();
+    do_contract_local_2(ls, l, s, r, rs)
+        .into_shape((shl.0, shl.1 * shr.1, shr.2))
+        .unwrap()
+}
+
+#[inline]
+fn do_contract_local_4<A>(
+    ls: Option<&nd::Array1<A::Re>>,
+    l: &nd::Array3<A>,
+    s: &nd::Array1<A::Re>,
+    r: &nd::Array3<A>,
+    rs: Option<&nd::Array1<A::Re>>,
+) -> nd::Array4<A>
+where A: ComplexLinalgScalar
+{
+    let shl = l.dim();
+    let shr = r.dim();
+    do_contract_local_2(ls, l, s, r, rs)
+        .into_shape((shl.0, shl.1, shr.1, shr.2))
+        .unwrap()
+}
+
+#[derive(Copy, Clone, Debug)]
+struct BondData<'a, A>
+where A: ComplexLinalgScalar
+{
+    ls: Option<&'a nd::Array1<A::Re>>,
+    l: &'a nd::Array3<A>,
+    s: &'a nd::Array1<A::Re>,
+    r: &'a nd::Array3<A>,
+    rs: Option<&'a nd::Array1<A::Re>>,
+}
+
+impl<T, A> MPS<T, A>
+where A: ComplexLinalgScalar
+{
+    // assume `k` is in bounds
+    fn get_bond_data(&self, k: usize) -> BondData<'_, A> {
+        let ls = (k != 0).then(|| &self.svals[k - 1]);
+        let l = &self.data[k];
+        let s = &self.svals[k];
+        let r = &self.data[k + 1];
+        let rs = (k != self.n - 2).then(|| &self.svals[k + 1]);
+        BondData { ls, l, s, r, rs }
+    }
+
     // do a single contraction between two particles' gamma matrices
     //
     // the result is returned as a 2D array in which the left and right physical
@@ -602,26 +698,22 @@ where A: ComplexLinalgScalar + 'static
     ) -> nd::Array2<A>
     {
         let shl = l.dim();
-        let l = l.view().into_shape((shl.0 * shl.1, shl.2)).unwrap();
+        let l
+            = l.as_standard_layout()
+            .into_shape((shl.0 * shl.1, shl.2))
+            .unwrap();
         let shr = r.dim();
-        let r = r.view().into_shape((shr.0, shr.1 * shr.2)).unwrap();
-        let mut q = nd::Array::zeros((shl.0 * shl.1, shr.1 * shr.2));
-        nd::Zip::from(q.rows_mut())
-            .and(l.rows())
-            .for_each(|qvs__, lvs_| {
-                nd::Zip::from(qvs__)
-                    .and(r.columns())
-                    .for_each(|qvstw, r_tw| {
-                        *qvstw
-                            = nd::Zip::from(lvs_)
-                            .and(s.view())
-                            .and(r_tw)
-                            .fold(A::zero(), |acc, lvsu, su, rutw| {
-                                acc + *lvsu * A::from_re(*su) * *rutw
-                            });
-                    })
+        let mut r
+            = r.as_standard_layout()
+            .into_shape((shr.0, shr.1 * shr.2))
+            .unwrap();
+        nd::Zip::from(r.rows_mut())
+            .and(s.view())
+            .for_each(|mut ru__, su| {
+                let su = A::from_re(*su);
+                ru__.map_inplace(|rusw| { *rusw *= su; });
             });
-        q
+        l.dot(&r)
     }
 
     // like `do_contract2`, but with the return value as a 3D array with
@@ -788,7 +880,7 @@ where A: ComplexLinalgScalar + 'static
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static
+    A: ComplexLinalgScalar
 {
     /// Return the contraction of `self` into a rank-N tensor.
     #[inline]
@@ -810,7 +902,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static,
+    A: ComplexLinalgScalar,
     nd::Array2<A>: SchmidtDecomp<A>,
 {
     // perform a contraction of the total state and repeat the initial
@@ -886,7 +978,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static,
+    A: ComplexLinalgScalar,
 {
     /// Evaluate the expectation value of a local operator acting (only) on the
     /// `k`-th particle.
@@ -1108,7 +1200,7 @@ where A: ComplexLinalgScalar
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static,
+    A: ComplexLinalgScalar,
 {
     /// Apply a unitary transformation to the `k`-th particle.
     ///
@@ -1140,7 +1232,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static,
+    A: ComplexLinalgScalar,
     nd::Array2<A>: SchmidtDecomp<A>,
 {
     /// Apply a unitary operator to the `k`-th and `k + 1`-th particles.
@@ -1212,7 +1304,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static,
+    A: ComplexLinalgScalar,
     nd::Array2<A>: SchmidtDecomp<A>,
     Standard: Distribution<A::Re>,
 {
@@ -1570,8 +1662,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx,
-    A: ComplexLinalgScalar + 'static,
-    // A::Re: std::fmt::Debug,
+    A: ComplexLinalgScalar,
 {
     /// Contract the MPS and convert to a single [`Tensor`] representing the
     /// pure state.
@@ -1627,8 +1718,13 @@ where
             .map(|idx| idx.dim())
             .product();
         let rho: nd::Array2<A>
-            = data.reshape((sidelen, sidelen))
+            = data.as_standard_layout()
+            .into_shape((sidelen, sidelen))
+            .unwrap()
             .into_owned();
+        // let rho: nd::Array2<A>
+        //     = data.reshape((sidelen, sidelen))
+        //     .into_owned();
         entropy_ry(&rho, a)
     }
 }
@@ -1636,7 +1732,7 @@ where
 impl<T, A> MPS<T, A>
 where
     T: Idx + Send + 'static,
-    A: ComplexLinalgScalar + Send + Sync + 'static,
+    A: ComplexLinalgScalar + Send + Sync,
     // A::Re: std::fmt::Debug,
 {
     /// Like [`Self::into_tensor`], but using a [`Pool`] for parallel
@@ -1706,8 +1802,13 @@ where
             .map(|idx| idx.dim())
             .product();
         let rho: nd::Array2<A>
-            = data.reshape((sidelen, sidelen))
+            = data.as_standard_layout()
+            .into_shape((sidelen, sidelen))
+            .unwrap()
             .into_owned();
+        // let rho: nd::Array2<A>
+        //     = data.reshape((sidelen, sidelen))
+        //     .into_owned();
         entropy_ry(&rho, a)
     }
 }

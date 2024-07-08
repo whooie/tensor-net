@@ -9,8 +9,8 @@
 //!
 //! ```
 //! use tensor_net::{
-//!     network2::{ Network, Pool },
-//!     tensor2::{ Idx, Tensor },
+//!     network3::{ Network, Pool },
+//!     tensor3::{ Idx, Tensor },
 //! };
 //!
 //! // our index type (see the Idx trait for static versus dynamic index types)
@@ -78,7 +78,7 @@ use std::{
 use crossbeam::channel;
 use rustc_hash::{ FxHashMap as HashMap };
 use thiserror::Error;
-use crate::tensor2::{ self as tensor, Tensor, Idx, Elem, };
+use crate::tensor3::{ self as tensor, Tensor, Idx, Elem, };
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
