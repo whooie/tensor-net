@@ -58,8 +58,8 @@ fn main() {
     let outdir = PathBuf::from("output");
     mkdir!(outdir);
 
-    let p_meas: nd::Array1<f64> = nd::Array1::linspace(0.12, 0.30, 19);
-    let size: nd::Array1<u32> = (6..=20).step_by(2).collect();
+    let p_meas: nd::Array1<f64> = nd::Array1::linspace(0.10, 0.20, 21);
+    let size: nd::Array1<u32> = (4..=20).step_by(2).collect();
     let caller = |q: &[usize]| -> (f64, f64, f64) {
         let n = size[q[1]] as usize;
         let p = p_meas[q[0]];
@@ -81,6 +81,7 @@ fn main() {
             "s_mean" => &s_mean,
             "s_std_p" => &s_std_p,
             "s_std_m" => &s_std_m,
+            "avg" => &nd::array![AVG as u32],
         }
     );
 }
