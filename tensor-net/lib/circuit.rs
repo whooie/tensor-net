@@ -344,6 +344,10 @@ impl MPSCircuit {
                         Cycling(1) => Pred::Always,
                         Cycling(n) => Pred::Func(
                             Box::new(move |k| k % n == d % n)),
+                        CyclingInv(0) => Pred::Always,
+                        CyclingInv(1) => Pred::Never,
+                        CyclingInv(n) => Pred::Func(
+                            Box::new(move |k| k % n != d % n)),
                         Block(0) => Pred::Never,
                         Block(b) => Pred::Func(
                             Box::new(move |k| k / b == d % b)),
@@ -369,7 +373,11 @@ impl MPSCircuit {
                         Cycling(0) => Pred::Never,
                         Cycling(1) => Pred::Always,
                         Cycling(n) => Pred::Func(
-                            Box::new(move |k| k % n == d % n)),
+                            Box::new(move |k| k % n == (d / m) % n)),
+                        CyclingInv(0) => Pred::Always,
+                        CyclingInv(1) => Pred::Never,
+                        CyclingInv(n) => Pred::Func(
+                            Box::new(move |k| k % n != (d / m) % n)),
                         Block(0) => Pred::Never,
                         Block(b) => Pred::Func(
                             Box::new(move |k| k / b == (d / m) % b)),
@@ -721,7 +729,7 @@ pub enum GateConfig<'a> {
     /// The "simple" set (all single-qubit gates and tiling CXs).
     Simple,
     /// Replace distinct, overlapped one- and two-qubit unitaries with tiled
-    /// Haar-random two-qubit unitary.
+    /// Haar-random two-qubit unitaries.
     Haar2,
     /// A particular gate set.
     GateSet(G1Set, G2Set),
@@ -762,11 +770,32 @@ pub enum MeasProbConfig {
     /// measurement layer. `Cycling(0)` means to never measure any qubit and
     /// `Cycling(1)` means to always measure every qubit.
     Cycling(usize),
+    /// Inverse of `Cycling`: Perform a measurement on every qubit *except*
+    /// every `n`-th qubit, shifting by 1 on every measurement layer.
+    /// `CyclingInv`(0)` means to always measure every qubit and `CyclingInv(1)`
+    /// means to never measure any qubit.
+    CyclingInv(usize),
     /// Perform measurements in blocks of `n` qubits that slide without overlap
     /// across the array.
     Block(usize),
     /// Perform measurements in sliding windows of `n` qubits.
     Window(usize),
+}
+
+impl MeasProbConfig {
+    /// Convert a measurement probability to `Cycling(round(1 / p))` if `p <
+    /// 0.5`, otherwise `CyclingInv(round(1 / (1 - p)))`.
+    pub fn cycling_prob(p: f64) -> Self {
+        if p.abs() < f64::EPSILON {
+            Self::Cycling(0)
+        } else if (1.0 - p).abs() < f64::EPSILON {
+            Self::Cycling(1)
+        } else if p.abs() < 0.5 {
+            Self::Cycling(p.recip().round() as usize)
+        } else {
+            Self::CyclingInv((1.0 - p).recip().round() as usize)
+        }
+    }
 }
 
 /// Define the entropy to calculate and the subsystem on which to calculate it.
