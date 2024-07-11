@@ -29,6 +29,10 @@ name = "entropy"
 path = "src/phase_transition.rs"
 name = "phase_transition"
 
+[[bin]]
+path = "src/state.rs"
+name = "state"
+
 [profile.release]
 lto = true
 panic = "abort"

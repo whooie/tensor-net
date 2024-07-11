@@ -19,6 +19,7 @@ t = np.arange(s.shape[0])
     .set_xlabel("Time")
     .set_ylabel("Entanglement entropy")
     .savefig(outdir.joinpath("entropy.png"))
-    .show()
+    # .show()
+    .close()
 )
 

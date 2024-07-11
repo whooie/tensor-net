@@ -19,11 +19,12 @@ fn eval_entropy(n: usize, p: f64, depth: usize, avg: usize) -> Entropy {
                 = MPSCircuit::new(n, Some(BondDim::Cutoff(1e-9)), None);
             let config = CircuitConfig {
                 depth: DepthConfig::Const(depth),
-                gates: GateConfig::Simple,
-                // gates: GateConfig::GateSet(G1Set::U, G2Set::CX),
+                // gates: GateConfig::Simple,
+                gates: GateConfig::GateSet(G1Set::HS, G2Set::CZ),
                 measurement: MeasureConfig {
                     layer: MeasLayerConfig::Every,
-                    prob: MeasProbConfig::Random(p),
+                    // prob: MeasProbConfig::Random(p),
+                    prob: MeasProbConfig::cycling_prob(p),
                 },
                 entropy: EntropyConfig::VonNeumann(n / 2..n),
             };
@@ -32,6 +33,11 @@ fn eval_entropy(n: usize, p: f64, depth: usize, avg: usize) -> Entropy {
                 .into_iter()
                 .skip(3 * depth / 4)
                 .sum::<f64>() / ((depth / 4) as f64);
+            // *s
+            //     = circuit.run_entropy(config, None)
+            //     .last()
+            //     .copied()
+            //     .unwrap();
         });
     let mean = entropy.mean().unwrap();
     let mut n: f64;
@@ -53,17 +59,17 @@ fn eval_entropy(n: usize, p: f64, depth: usize, avg: usize) -> Entropy {
 }
 
 fn main() {
-    const AVG: usize = 500;
+    const AVG: usize = 1000;
 
     let outdir = PathBuf::from("output");
     mkdir!(outdir);
 
-    let p_meas: nd::Array1<f64> = nd::Array1::linspace(0.10, 0.20, 21);
-    let size: nd::Array1<u32> = (4..=20).step_by(2).collect();
+    let p_meas: nd::Array1<f64> = nd::Array1::linspace(0.05, 0.14, 10);
+    let size: nd::Array1<u32> = (4..=16).step_by(2).collect();
     let caller = |q: &[usize]| -> (f64, f64, f64) {
         let n = size[q[1]] as usize;
         let p = p_meas[q[0]];
-        let Entropy { mean, std_p, std_m } = eval_entropy(n, p, 3 * n, AVG);
+        let Entropy { mean, std_p, std_m } = eval_entropy(n, p, 4 * n, AVG);
         (mean, std_p, std_m)
     };
     let (s_mean, s_std_p, s_std_m)
