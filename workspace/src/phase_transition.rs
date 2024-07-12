@@ -25,6 +25,7 @@ fn eval_entropy(n: usize, p: f64, depth: usize, avg: usize) -> Entropy {
                     layer: MeasLayerConfig::Every,
                     // prob: MeasProbConfig::Random(p),
                     prob: MeasProbConfig::cycling_prob(p),
+                    reset: false,
                 },
                 entropy: EntropyConfig::VonNeumann(n / 2..n),
             };

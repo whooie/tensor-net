@@ -282,6 +282,7 @@ impl MPSCircuit {
         fn do_measure(
             circ: &mut MPSCircuit,
             pred: Pred,
+            reset: bool,
             buf: &mut [Option<Outcome>],
         ) {
             buf.iter_mut()
@@ -292,21 +293,30 @@ impl MPSCircuit {
                             *outk = None;
                         },
                         Pred::Always => {
-                            *outk = circ.state.measure(k, &mut circ.rng)
-                                .map(Outcome::from);
+                            *outk = if reset {
+                                circ.state.measure_reset(k, &mut circ.rng)
+                            } else {
+                                circ.state.measure(k, &mut circ.rng)
+                            }.map(Outcome::from)
                         },
                         Pred::Prob(p) => {
                             *outk = if circ.rng.gen::<f64>() < *p {
-                                circ.state.measure(k, &mut circ.rng)
-                                    .map(Outcome::from)
+                                if reset {
+                                    circ.state.measure_reset(k, &mut circ.rng)
+                                } else {
+                                    circ.state.measure(k, &mut circ.rng)
+                                }.map(Outcome::from)
                             } else {
                                 None
                             };
                         },
                         Pred::Func(f) => {
                             *outk = if f(k) {
-                                circ.state.measure(k, &mut circ.rng)
-                                    .map(Outcome::from)
+                                if reset {
+                                    circ.state.measure_reset(k, &mut circ.rng)
+                                } else {
+                                    circ.state.measure(k, &mut circ.rng)
+                                }.map(Outcome::from)
                             } else {
                                 None
                             };
@@ -334,7 +344,7 @@ impl MPSCircuit {
             //     .for_each(|(k, outk)| { buf[k] = Some(Outcome::from(outk)); });
         }
 
-        let MeasureConfig { layer, prob } = config;
+        let MeasureConfig { layer, prob, reset } = config;
         match layer {
             Every | Period(1) => {
                 let pred
@@ -363,7 +373,7 @@ impl MPSCircuit {
                             )
                         },
                     };
-                do_measure(self, pred, buf);
+                do_measure(self, pred, reset, buf);
                 true
             },
             Period(m) if d % m == 0 => {
@@ -394,7 +404,7 @@ impl MPSCircuit {
                             )
                         },
                     };
-                do_measure(self, pred, buf);
+                do_measure(self, pred, reset, buf);
                 true
             },
             _ => {
@@ -746,6 +756,8 @@ pub struct MeasureConfig {
     pub layer: MeasLayerConfig,
     /// Application of measurements within a single layer.
     pub prob: MeasProbConfig,
+    /// Apply a deterministic reset back to ∣0⟩ after each measurement.
+    pub reset: bool,
 }
 
 /// Define the conditions for when measurement layers are applied.

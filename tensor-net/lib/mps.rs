@@ -1889,6 +1889,19 @@ impl MPS<Q, C64> {
         gates.into_iter().copied().for_each(|g| { self.apply_gate(g); });
         self
     }
+
+    /// Like [`Self::measure`], but deterministically reset the state to ∣0⟩;
+    /// after measurement.
+    pub fn measure_reset<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
+    where R: Rng + ?Sized
+    {
+        let res = self.measure(k, rng);
+        if let Some(1) = res {
+            self.apply_unitary1(k, Lazy::force(&gate::XMAT))
+                .unwrap();
+        }
+        res
+    }
 }
 
 fn block_indent(tab: &str, level: usize, s: &str) -> String {

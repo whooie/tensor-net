@@ -31,6 +31,7 @@ fn main() {
                     layer: MeasLayerConfig::Every,
                     prob: MeasProbConfig::Random(P_MEAS),
                     // prob: MeasProbConfig::cycling_prob(P_MEAS),
+                    reset: false,
                 },
                 entropy: EntropyConfig::VonNeumann(0..N / 2),
                 // entropy: EntropyConfig::VonNeumann(N / 2..N),
@@ -60,6 +61,7 @@ fn main() {
     //         measurement: MeasureConfig {
     //             layer: MeasLayerConfig::Every,
     //             prob: MeasProbConfig::Random(P_MEAS),
+    //             reset: false,
     //         },
     //         entropy: EntropyConfig::VonNeumann(0..N / 2),
     //     };
