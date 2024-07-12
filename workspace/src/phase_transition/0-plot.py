@@ -5,10 +5,10 @@ import numpy as np
 import whooie.pyplotdefs as pd
 
 outdir = Path("output")
-# infile = outdir.joinpath("phase_transition.npz")
+infile = outdir.joinpath("phase_transition.npz")
 # infile = outdir.joinpath("phase_transition_p_meas=0.07..0.15_size=5..17.npz")
 # infile = outdir.joinpath("phase_transition_p_meas=0.12..0.20_size=4..22.npz")
-infile = outdir.joinpath("phase_transition_p_meas=0.10..0.20_size=4..20.npz")
+# infile = outdir.joinpath("phase_transition_p_meas=0.10..0.20_size=4..20.npz")
 # infile = outdir.joinpath("phase_transition_p_meas=0.10..0.20_size=5..19.npz")
 
 data = np.load(str(infile))
@@ -157,29 +157,29 @@ for (k, (p_k, mean_k, std_p_k, std_m_k)) in it:
     .savefig(outdir.joinpath("phase_transition.png"))
 )
 
-(
-    pd.Plotter()
-    .plot(
-        p_meas, correlations[0, :],
-        marker="o", linestyle="-", color="C0",
-        label="Area law",
-    )
-    .plot(
-        p_meas, correlations[1, :],
-        marker="o", linestyle="-", color="C1",
-        label="Volume law",
-    )
-    .plot(
-        p_meas, correlations[2, :],
-        marker="o", linestyle="-", color="C3",
-        label="Critical",
-    )
-    .ggrid()
-    .legend(fontsize="xx-small")
-    .set_xlabel("$p$")
-    .set_ylabel("$\\chi^2$")
-    .savefig(outdir.joinpath("phase_transition_correlations.png"))
-)
+# (
+#     pd.Plotter()
+#     .plot(
+#         p_meas, correlations[0, :],
+#         marker="o", linestyle="-", color="C0",
+#         label="Area law",
+#     )
+#     .plot(
+#         p_meas, correlations[1, :],
+#         marker="o", linestyle="-", color="C1",
+#         label="Volume law",
+#     )
+#     .plot(
+#         p_meas, correlations[2, :],
+#         marker="o", linestyle="-", color="C3",
+#         label="Critical",
+#     )
+#     .ggrid()
+#     .legend(fontsize="xx-small")
+#     .set_xlabel("$p$")
+#     .set_ylabel("$\\chi^2$")
+#     .savefig(outdir.joinpath("phase_transition_correlations.png"))
+# )
 
 # pd.show()
 

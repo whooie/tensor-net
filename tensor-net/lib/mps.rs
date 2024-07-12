@@ -1160,16 +1160,14 @@ where A: ComplexLinalgScalar
     /// Returns `None` if `b` is out of bounds.
     #[inline]
     pub fn entropy_vn(&self, b: usize) -> Option<A::Re> {
-        let zero = A::Re::zero();
         self.svals.get(b)
             .map(|s| {
                 s.iter().copied()
-                    .filter(|sk| *sk > zero)
                     .map(|sk| {
                         let sk2 = sk * sk;
                         -sk2 * sk2.ln()
                     })
-                    .fold(zero, A::Re::add)
+                    .fold(A::Re::zero(), A::Re::add)
             })
     }
 
@@ -1186,8 +1184,7 @@ where A: ComplexLinalgScalar
         } else {
             self.svals.get(b)
                 .map(|s| {
-                    s.iter()
-                        .copied()
+                    s.iter().copied()
                         .map(|sk| (sk * sk).powf(a))
                         .fold(A::Re::zero(), A::Re::add)
                         .ln()
@@ -1426,8 +1423,8 @@ where
         let renorm = A::from_re(prob.sqrt());
         self.project(k, p, renorm);
         // self.refactor_lrsweep();
-        // self.refactor_rlsweep();
         self.refactor_sweep();
+        // self.refactor();
         Some(p)
     }
 

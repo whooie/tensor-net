@@ -409,12 +409,12 @@ impl MPSCircuit {
             EntropyConfig::VonNeumann(part) => {
                 let Range { start, end } = part;
                 let start = *start;
-                let end = *end;
+                let end = end.saturating_sub(1);
                 if start == 0 {
                     self.state.entropy_vn(end).unwrap_or(0.0)
                 } else {
                     (
-                        self.state.entropy_vn(start).unwrap_or(0.0)
+                        self.state.entropy_vn(start - 1).unwrap_or(0.0)
                         - self.state.entropy_vn(end).unwrap_or(0.0)
                     ).abs()
                 }
@@ -422,12 +422,12 @@ impl MPSCircuit {
             EntropyConfig::RenyiSchmidt(part, a) => {
                 let Range { start, end } = part;
                 let start = *start;
-                let end = *end;
+                let end = end.saturating_sub(1);
                 if start == 0 {
                     self.state.entropy_ry_schmidt(*a, end).unwrap_or(0.0)
                 } else {
                     (
-                        self.state.entropy_ry_schmidt(*a, start).unwrap_or(0.0)
+                        self.state.entropy_ry_schmidt(*a, start - 1).unwrap_or(0.0)
                         - self.state.entropy_ry_schmidt(*a, end).unwrap_or(0.0)
                     ).abs()
                 }
@@ -463,14 +463,14 @@ impl MPSCircuit {
             gates.clear();
             match gate_conf {
                 GateConfig::Simple => {
-                    self.sample_simple(d % 2 == 1, &mut gates);
+                    self.sample_simple(d % 2 == 0, &mut gates);
                     self.state.apply_circuit(&gates);
                 },
                 GateConfig::Haar2 => {
-                    self.apply_haars(d % 2 == 1);
+                    self.apply_haars(d % 2 == 0);
                 },
                 GateConfig::GateSet(ref g1, ref g2) => {
-                    self.sample_gateset(g1, g2, d % 2 == 1, &mut gates);
+                    self.sample_gateset(g1, g2, d % 2 == 0, &mut gates);
                     self.state.apply_circuit(&gates);
                 },
                 GateConfig::Circuit(ref circ) => {
@@ -480,12 +480,12 @@ impl MPSCircuit {
                     match f(d, s, &outcomes) {
                         Feedback::Halt => { break; },
                         Feedback::Simple => {
-                            self.sample_simple(d % 2 == 1, &mut gates);
+                            self.sample_simple(d % 2 == 0, &mut gates);
                             self.state.apply_circuit(&gates);
                         },
                         Feedback::GateSet(g1, g2) => {
                             self.sample_gateset(
-                                &g1, &g2, d % 2 == 1, &mut gates);
+                                &g1, &g2, d % 2 == 0, &mut gates);
                             self.state.apply_circuit(&gates);
                         },
                         Feedback::Circuit(circ) => {
