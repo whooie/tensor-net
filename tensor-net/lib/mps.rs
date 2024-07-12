@@ -240,7 +240,7 @@ where A: ComplexLinalgScalar
     s.map_inplace(|sj| { *sj /= norm; });
     let rank
         = match trunc {
-            Some(BondDim::Const(r)) => r.max(1),
+            Some(BondDim::Const(r)) => r.max(1).min(s.len()),
             Some(BondDim::Cutoff(eps)) => {
                 let eps = eps.abs();
                 s.iter()
