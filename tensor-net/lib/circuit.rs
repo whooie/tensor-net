@@ -493,6 +493,9 @@ impl MPSCircuit {
                             self.sample_simple(d % 2 == 0, &mut gates);
                             self.state.apply_circuit(&gates);
                         },
+                        Feedback::Haar2 => {
+                            self.apply_haars(d % 2 == 0);
+                        },
                         Feedback::GateSet(g1, g2) => {
                             self.sample_gateset(
                                 &g1, &g2, d % 2 == 0, &mut gates);
@@ -585,6 +588,8 @@ pub enum Feedback {
     /// Draw the next layer of gates from the "simple" set (all single-qubit
     /// gates and tiling CXs).
     Simple,
+    /// Draw the next layer of gates uniformly from the two-qubit Haar measure.
+    Haar2,
     /// Draw the next layer of gates uniformly from gate sets (two-qubit gates
     /// will still alternately tile).
     GateSet(G1Set, G2Set),
