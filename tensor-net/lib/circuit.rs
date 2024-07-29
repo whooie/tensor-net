@@ -537,7 +537,8 @@ impl MPSCircuit {
         &mut self,
         mut config: CircuitConfig,
         meas: Option<&mut MeasRecord>,
-    ) -> Vec<f64> {
+    ) -> Vec<f64>
+    {
         let mut entropy: Vec<f64> = Vec::new();
         self.do_run(&mut config, meas, Some(&mut entropy), /* None */);
         entropy
@@ -561,8 +562,49 @@ impl MPSCircuit {
     /// Run the MIPT procedure for a general config without recording any
     /// time-evolution data.
     pub fn run(&mut self, mut config: CircuitConfig) {
-        self.do_run(&mut config, None, None, /* None */)
+        self.do_run(&mut config, None, None, /* None */);
     }
+
+    #[allow(unused_variables, unused_mut)]
+    fn do_run_fixed(
+        &mut self,
+        circ: &Circ,
+        mut meas: Option<&mut MeasRecord>,
+        mut entropy: Option<&mut Vec<f64>>,
+    ) {
+        todo!()
+    }
+
+    /// Run the MIPT procedure for a completely fixed circuit.
+    ///
+    /// Returns the entanglement entropy measured once before the first layer,
+    /// and then after each round of measurements.
+    pub fn run_entropy_fixed(
+        &mut self,
+        circ: &Circ,
+        meas: Option<&mut MeasRecord>,
+    ) -> Vec<f64>
+    {
+        let mut entropy: Vec<f64> = Vec::new();
+        self.do_run_fixed(circ, meas, Some(&mut entropy));
+        entropy
+    }
+
+    /// Run the MIPT procedure for a completely fixed circuit without recording
+    /// any time-evolution data.
+    pub fn run_fixed(&mut self, circ: &Circ) {
+        self.do_run_fixed(circ, None, None);
+    }
+
+}
+
+pub enum Op {
+    Gate(Gate),
+    Meas(usize),
+}
+
+pub struct Circ {
+    ops: Vec<Op>,
 }
 
 /// Iterator type for qubit indices under a two-qubit gate tiling.
