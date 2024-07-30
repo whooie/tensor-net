@@ -1876,6 +1876,13 @@ impl MPS<Q, C64> {
                 self.apply_unitary2(k, Lazy::force(&gate::CZMAT))
                     .unwrap();
             },
+            Gate::Haar2(k) if k < self.n - 1 => {
+                // TODO: figure out a way to avoid having to call thread_rng
+                // here; it's slow
+                let mut rng = rand::thread_rng();
+                self.apply_unitary2(k, &gate::haar(2, &mut rng))
+                    .unwrap();
+            },
             _ => { },
         }
         self

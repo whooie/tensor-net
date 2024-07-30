@@ -1,14 +1,14 @@
 //! Abstractions for driving randomized circuits on qubits and measureing
 //! measurement-induced phase transitions (MIPTs).
 
-#![allow(unused_imports)]
-
 use std::ops::Range;
 use rand::{ rngs::StdRng, Rng, SeedableRng };
 use rustc_hash::FxHashSet as HashSet;
 use num_complex::Complex64 as C64;
+use once_cell::sync::Lazy;
+use thiserror::Error;
 use crate::{
-    gate::{ self, GateToken, Gate, G1, G2 },
+    gate::{ self, GateToken, Gate, G1, G2, ExactGate },
     mps::{ BondDim, MPS },
     tensor::Idx,
 };
@@ -565,14 +565,63 @@ impl MPSCircuit {
         self.do_run(&mut config, None, None, /* None */);
     }
 
-    #[allow(unused_variables, unused_mut)]
     fn do_run_fixed(
         &mut self,
-        circ: &Circ,
+        circ: &Circuit,
         mut meas: Option<&mut MeasRecord>,
         mut entropy: Option<&mut Vec<f64>>,
     ) {
-        todo!()
+        let Circuit { n: _, ops, reset, entropy: entropy_conf } = circ;
+        let reset = *reset;
+        let mut outcomes: MeasLayer = vec![None; self.n];
+        let mut s: f64;
+        if let Some(rcd) = entropy.as_mut() {
+            s = self.entropy(entropy_conf);
+            rcd.push(s);
+        }
+        for layer in ops.iter() {
+            for uni in layer.unis.iter() {
+                match uni {
+                    Unitary::Gate(gate) => {
+                        self.state.apply_gate(*gate);
+                    },
+                    Unitary::ExactGate(ExactGate::Q1(k, gate)) => {
+                        self.state.apply_unitary1(*k, gate)
+                            .expect("invalid q1 unitary application");
+                    },
+                    Unitary::ExactGate(ExactGate::Q2(k, gate)) => {
+                        self.state.apply_unitary2(*k, gate)
+                            .expect("invalid q2 unitary application");
+                    },
+                }
+            }
+
+            if reset {
+                for &k in layer.meas.iter() {
+                    if let Some(outk) = outcomes.get_mut(k) {
+                        *outk = self.state.measure_reset(k, &mut self.rng)
+                            .map(Outcome::from);
+                    }
+                }
+            } else {
+                for &k in layer.meas.iter() {
+                    if let Some(outk) = outcomes.get_mut(k) {
+                        *outk = self.state.measure(k, &mut self.rng)
+                            .map(Outcome::from);
+                    }
+                }
+            }
+            if let Some(rcd) = meas.as_mut() {
+                let mut tmp: MeasLayer = vec![None; self.n];
+                std::mem::swap(&mut tmp, &mut outcomes);
+                rcd.push(tmp);
+            }
+
+            if let Some(rcd) = entropy.as_mut() {
+                s = self.entropy(entropy_conf);
+                rcd.push(s);
+            }
+        }
     }
 
     /// Run the MIPT procedure for a completely fixed circuit.
@@ -581,7 +630,7 @@ impl MPSCircuit {
     /// and then after each round of measurements.
     pub fn run_entropy_fixed(
         &mut self,
-        circ: &Circ,
+        circ: &Circuit,
         meas: Option<&mut MeasRecord>,
     ) -> Vec<f64>
     {
@@ -592,19 +641,10 @@ impl MPSCircuit {
 
     /// Run the MIPT procedure for a completely fixed circuit without recording
     /// any time-evolution data.
-    pub fn run_fixed(&mut self, circ: &Circ) {
+    pub fn run_fixed(&mut self, circ: &Circuit) {
         self.do_run_fixed(circ, None, None);
     }
 
-}
-
-pub enum Op {
-    Gate(Gate),
-    Meas(usize),
-}
-
-pub struct Circ {
-    ops: Vec<Op>,
 }
 
 /// Iterator type for qubit indices under a two-qubit gate tiling.
@@ -700,22 +740,7 @@ impl G1Set {
     {
         use std::f64::consts::TAU;
         match self {
-            Self::All => match rng.gen_range(0..8_u8) {
-                0 => {
-                    let alpha: f64 = TAU * rng.gen::<f64>();
-                    let beta: f64 = TAU * rng.gen::<f64>();
-                    let gamma: f64 = TAU * rng.gen::<f64>();
-                    Gate::U(k, alpha, beta, gamma)
-                },
-                1 => Gate::H(k),
-                2 => Gate::X(k),
-                3 => Gate::Z(k),
-                4 => Gate::S(k),
-                5 => Gate::SInv(k),
-                6 => Gate::XRot(k, TAU * rng.gen::<f64>()),
-                7 => Gate::ZRot(k, TAU * rng.gen::<f64>()),
-                _ => unreachable!(),
-            },
+            Self::All => G1::sample_random(k, rng),
             Self::U => {
                 let alpha: f64 = TAU * rng.gen::<f64>();
                 let beta: f64 = TAU * rng.gen::<f64>();
@@ -735,6 +760,35 @@ impl G1Set {
                 Gate::S(k)
             },
             Self::Set(set) => Gate::sample_from(set, k, rng),
+        }
+    }
+
+    /// Sample an exact gate.
+    pub fn sample_exact<R>(&self, k: usize, rng: &mut R) -> ExactGate
+    where R: Rng + ?Sized
+    {
+        use std::f64::consts::TAU;
+        match self {
+            Self::All => G1::sample_random(k, rng),
+            Self::U => {
+                let alpha: f64 = TAU * rng.gen::<f64>();
+                let beta: f64 = TAU * rng.gen::<f64>();
+                let gamma: f64 = TAU * rng.gen::<f64>();
+                ExactGate::Q1(k, gate::make_u(alpha, beta, gamma))
+            },
+            Self::H => ExactGate::Q1(k, Lazy::force(&gate::HMAT).clone()),
+            Self::X => ExactGate::Q1(k, Lazy::force(&gate::XMAT).clone()),
+            Self::Z => ExactGate::Q1(k, Lazy::force(&gate::ZMAT).clone()),
+            Self::S => ExactGate::Q1(k, Lazy::force(&gate::SMAT).clone()),
+            Self::SInv => ExactGate::Q1(k, Lazy::force(&gate::SINVMAT).clone()),
+            Self::XRot => ExactGate::Q1(k, gate::make_xrot(TAU * rng.gen::<f64>())),
+            Self::ZRot => ExactGate::Q1(k, gate::make_zrot(TAU * rng.gen::<f64>())),
+            Self::HS => if rng.gen::<bool>() {
+                ExactGate::Q1(k, Lazy::force(&gate::HMAT).clone())
+            } else {
+                ExactGate::Q1(k, Lazy::force(&gate::SMAT).clone())
+            },
+            Self::Set(set) => ExactGate::sample_from(set, k, rng),
         }
     }
 }
@@ -762,12 +816,13 @@ impl G2Set {
     where R: Rng + ?Sized
     {
         match self {
-            Self::All => match rng.gen_range(0..3_u8) {
-                0 => Gate::CX(a),
-                1 => Gate::CXRev(a),
-                2 => Gate::CZ(a),
-                _ => unreachable!(),
-            },
+            Self::All => G2::sample_random(a, rng),
+            // Self::All => match rng.gen_range(0..3_u8) {
+            //     0 => Gate::CX(a),
+            //     1 => Gate::CXRev(a),
+            //     2 => Gate::CZ(a),
+            //     _ => unreachable!(),
+            // },
             Self::CX => Gate::CX(a),
             Self::CXRev => Gate::CXRev(a),
             Self::CZ => Gate::CZ(a),
@@ -777,6 +832,24 @@ impl G2Set {
                 Gate::CZ(a)
             },
             Self::Set(set) => Gate::sample_from(set, a, rng),
+        }
+    }
+
+    /// Sample an exact gate.
+    pub fn sample_exact<R>(&self, a: usize, rng: &mut R) -> ExactGate
+    where R: Rng + ?Sized
+    {
+        match self {
+            Self::All => G2::sample_random(a, rng),
+            Self::CX => ExactGate::Q2(a, Lazy::force(&gate::CXMAT).clone()),
+            Self::CXRev => ExactGate::Q2(a, Lazy::force(&gate::CXREVMAT).clone()),
+            Self::CZ => ExactGate::Q2(a, Lazy::force(&gate::CZMAT).clone()),
+            Self::CXCZ => if rng.gen::<bool>() {
+                ExactGate::Q2(a, Lazy::force(&gate::CXMAT).clone())
+            } else {
+                ExactGate::Q2(a, Lazy::force(&gate::CZMAT).clone())
+            },
+            Self::Set(set) => ExactGate::sample_from(set, a, rng),
         }
     }
 }
@@ -882,5 +955,288 @@ pub struct CircuitConfig<'a> {
     pub measurement: MeasureConfig,
     /// Set the entropy to calculate.
     pub entropy: EntropyConfig,
+}
+
+/// A single unitary operation in a [`Circuit`].
+///
+/// Can be either a general gate description to leave two-qubit Haar gates
+/// random, or a literal unitary matrix to fix the action of the gate exactly.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Unitary {
+    /// A general gate description.
+    Gate(Gate),
+    /// An exact one- or two-qubit unitary.
+    ///
+    /// **Note**: This variant stores the exact 2x2 or 4x4 matrix representation
+    /// of the unitary; if your circuit only contains non-Haar-random gates
+    /// (e.g. `H`, `XRot`, `S`), then consider using `Gate` instead.
+    ExactGate(ExactGate),
+}
+
+impl From<Gate> for Unitary {
+    fn from(gate: Gate) -> Self { Self::Gate(gate) }
+}
+
+impl From<ExactGate> for Unitary {
+    fn from(gate: ExactGate) -> Self { Self::ExactGate(gate) }
+}
+
+/// The operations in a single layer of a [`Circuit`].
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OpLayer {
+    /// All unitary operations.
+    pub unis: Vec<Unitary>,
+    /// The indices of the qubits to be measured.
+    pub meas: Vec<usize>,
+}
+
+#[derive(Debug, Error)]
+pub enum CircuitError {
+    #[error("non-constant depths are not supported by Circuit")]
+    NoDynDepth,
+
+    #[error("active-feedback circuits are not supported by Circuit")]
+    NoFeedback,
+}
+use CircuitError::*;
+pub type CircuitResult<T> = Result<T, CircuitError>;
+
+/// A fixed set of circuit operations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Circuit {
+    n: usize,
+    ops: Vec<OpLayer>,
+    reset: bool,
+    entropy: EntropyConfig,
+}
+
+impl Circuit {
+    fn sample_simple<R>(
+        n: usize,
+        offs: bool,
+        exact: bool,
+        ops: &mut OpLayer,
+        rng: &mut R,
+    )
+    where R: Rng + ?Sized
+    {
+        if exact {
+            (0..n).for_each(|k| {
+                let uni = Unitary::ExactGate(G1::sample_random(k, rng));
+                ops.unis.push(uni);
+            });
+            TileQ2::new(offs, n).for_each(|a| {
+                let uni = ExactGate::Q2(a, Lazy::force(&gate::CXMAT).clone());
+                ops.unis.push(uni.into());
+            });
+        } else {
+            (0..n).for_each(|k| {
+                let uni = Unitary::Gate(G1::sample_random(k, rng));
+                ops.unis.push(uni);
+            });
+            TileQ2::new(offs, n).for_each(|a| {
+                let uni = Unitary::Gate(Gate::CX(a));
+                ops.unis.push(uni);
+            });
+        }
+    }
+
+    fn sample_haars<R>(
+        n: usize,
+        offs: bool,
+        exact: bool,
+        ops: &mut OpLayer,
+        rng: &mut R,
+    )
+    where R: Rng + ?Sized
+    {
+        if exact {
+            TileQ2::new(offs, n).for_each(|a| {
+                let gate = ExactGate::Q2(a, gate::haar(2, rng));
+                ops.unis.push(Unitary::ExactGate(gate))
+            });
+        } else {
+            TileQ2::new(offs, n).for_each(|a| {
+                ops.unis.push(Unitary::Gate(Gate::Haar2(a)));
+            });
+        }
+    }
+
+    fn sample_gateset<R>(
+        n: usize,
+        g1: &G1Set,
+        g2: &G2Set,
+        offs: bool,
+        exact: bool,
+        ops: &mut OpLayer,
+        rng: &mut R,
+    )
+    where R: Rng + ?Sized
+    {
+        if exact {
+            (0..n).for_each(|k| {
+                ops.unis.push(Unitary::ExactGate(g1.sample_exact(k, rng)));
+            });
+            TileQ2::new(offs, n).for_each(|a| {
+                ops.unis.push(Unitary::ExactGate(g2.sample_exact(a, rng)));
+            });
+        } else {
+            (0..n).for_each(|k| {
+                ops.unis.push(Unitary::Gate(g1.sample(k, rng)));
+            });
+            TileQ2::new(offs, n).for_each(|a| {
+                ops.unis.push(Unitary::Gate(g2.sample(a, rng)));
+            });
+        }
+    }
+
+    fn sample_measurements<R>(
+        n: usize,
+        d: usize,
+        config: MeasureConfig,
+        ops: &mut OpLayer,
+        rng: &mut R,
+    )
+    where R: Rng + ?Sized
+    {
+        use MeasLayerConfig::*;
+        use MeasProbConfig::*;
+
+        enum Pred<'a> {
+            Never,
+            Always,
+            Prob(f64),
+            Func(Box<dyn Fn(usize) -> bool + 'a>),
+        }
+
+        fn do_measure<R>(
+            n: usize,
+            pred: Pred,
+            ops: &mut OpLayer,
+            rng: &mut R
+        )
+        where R: Rng + ?Sized
+        {
+            (0..n)
+                .filter(|k| {
+                    match &pred {
+                        Pred::Never => false,
+                        Pred::Always => true,
+                        Pred::Prob(p) => rng.gen::<f64>() < *p,
+                        Pred::Func(f) => f(*k),
+                    }
+                })
+                .for_each(|k| { ops.meas.push(k); });
+        }
+
+        let MeasureConfig { layer, prob, reset: _ } = config;
+        match layer {
+            Every | Period(1) => {
+                let pred
+                    = match prob {
+                        Random(p) => Pred::Prob(p),
+                        Cycling(0) => Pred::Never,
+                        Cycling(1) => Pred::Always,
+                        Cycling(n) => Pred::Func(
+                            Box::new(move |k| k % n == d % n)),
+                        CyclingInv(0) => Pred::Always,
+                        CyclingInv(1) => Pred::Never,
+                        CyclingInv(n) => Pred::Func(
+                            Box::new(move |k| k % n != d % n)),
+                        Block(0) => Pred::Never,
+                        Block(b) => Pred::Func(
+                            Box::new(move |k| k / b == d % b)),
+                        Window(0) => Pred::Never,
+                        Window(w) => {
+                            let d = d as isize;
+                            let w = w as isize;
+                            let n = n as isize;
+                            Pred::Func(
+                                Box::new(move |k| {
+                                    (k as isize - d).rem_euclid(n) / w == 0
+                                })
+                            )
+                        },
+                    };
+                do_measure(n, pred, ops, rng);
+            },
+            Period(m) if d % m == 0 => {
+                let pred
+                    = match prob {
+                        Random(p) => Pred::Prob(p),
+                        Cycling(0) => Pred::Never,
+                        Cycling(1) => Pred::Always,
+                        Cycling(n) => Pred::Func(
+                            Box::new(move |k| k % n == (d / m) % n)),
+                        CyclingInv(0) => Pred::Always,
+                        CyclingInv(1) => Pred::Never,
+                        CyclingInv(n) => Pred::Func(
+                            Box::new(move |k| k % n != (d / m) % n)),
+                        Block(0) => Pred::Never,
+                        Block(b) => Pred::Func(
+                            Box::new(move |k| k / b == (d / m) % b)),
+                        Window(0) => Pred::Never,
+                        Window(w) => {
+                            let d = d as isize;
+                            let w = w as isize;
+                            let n = n as isize;
+                            let m = m as isize;
+                            Pred::Func(
+                                Box::new(move |k| {
+                                    (k as isize - d / m).rem_euclid(n) / w == 0
+                                })
+                            )
+                        },
+                    };
+                do_measure(n, pred, ops, rng);
+            },
+            _ => { }
+        }
+    }
+
+    /// Generate a fixed circuit description for `n` qubits from a
+    /// [`CircuitConfig`].
+    ///
+    /// If `exact == true`, then all gates are stored
+    /// [exactly][Unitary::ExactGate`]s.
+    pub fn gen<R>(n: usize, config: CircuitConfig, exact: bool, rng: &mut R)
+        -> CircuitResult<Self>
+    where R: Rng + ?Sized
+    {
+        let CircuitConfig {
+            depth: depth_conf,
+            gates: gate_conf,
+            measurement: meas_conf,
+            entropy: entropy_conf,
+        } = config;
+        let DepthConfig::Const(depth) = depth_conf
+            else { return Err(NoDynDepth); };
+        if let GateConfig::Feedback(..) = &gate_conf { return Err(NoFeedback); }
+
+        let mut ops: Vec<OpLayer> = Vec::new();
+        let mut layer = OpLayer::default();
+        for d in 0..depth {
+            match &gate_conf {
+                GateConfig::Simple => {
+                    Self::sample_simple(n, d % 2 == 1, exact, &mut layer, rng);
+                },
+                GateConfig::Haar2 => {
+                    Self::sample_haars(n, d % 2 == 1, exact, &mut layer, rng);
+                },
+                GateConfig::GateSet(ref g1, ref g2) => {
+                    Self::sample_gateset(
+                        n, g1, g2, d % 2 == 1, exact, &mut layer, rng);
+                },
+                GateConfig::Circuit(circ) => {
+                    circ.iter().copied()
+                        .for_each(|gate| { layer.unis.push(gate.into()); });
+                },
+                GateConfig::Feedback(..) => unreachable!(),
+            }
+            Self::sample_measurements(n, d, meas_conf, &mut layer, rng);
+            ops.push(std::mem::take(&mut layer));
+        }
+        Ok(Self { n, ops, reset: meas_conf.reset, entropy: entropy_conf })
+    }
 }
 

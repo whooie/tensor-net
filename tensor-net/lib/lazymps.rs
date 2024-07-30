@@ -53,6 +53,7 @@ pub(crate) enum G2 {
     CX,
     CXRev,
     CZ,
+    Haar2,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -77,6 +78,7 @@ impl From<Gate> for Operation {
             Gate::CX(c) => Self::G2(c, G2::CX),
             Gate::CXRev(t) => Self::G2(t, G2::CXRev),
             Gate::CZ(c) => Self::G2(c, G2::CZ),
+            Gate::Haar2(k) => Self::G2(k, G2::Haar2),
         }
     }
 }
@@ -120,103 +122,6 @@ impl Operation {
                     _ => false,
                 }
             },
-
-        // let dk = self.outs[k].dim();
-        // let dkp1 = self.outs[k + 1].dim();
-        // if op.shape() != [dk * dkp1, dk * dkp1] {
-        //     return Err(OperatorIncompatibleShape);
-        // }
-        // if k == 0 {
-        //     let gk = &self.data[k];
-        //     let shk = gk.raw_dim().into_pattern();
-        //     let lk = &self.svals[k];
-        //     let gkp1 = &self.data[k + 1];
-        //     let shkp1 = gkp1.raw_dim().into_pattern();
-        //     let z1 = dk;
-        //     let z2 = shkp1.2;
-        //     let q: nd::Array2<A>
-        //         = nd::Array2::from_shape_fn(
-        //             (shk.0 * dk, dkp1 * shkp1.2),
-        //             |(v_sk, skp1_w)| {
-        //                 let v = v_sk / z1;
-        //                 let sk = v_sk % z1;
-        //                 let skp1 = skp1_w / z2;
-        //                 let w = skp1_w % z2;
-        //                 (0..dk)
-        //                     .cartesian_product(0..dkp1)
-        //                     .cartesian_product(lk.iter().enumerate())
-        //                     .map(|((ssk, sskp1), (u, lku))| {
-        //                         gk[[v, ssk, u]]
-        //                             * A::from_re(*lku)
-        //                             * gkp1[[u, sskp1, w]]
-        //                             * op[[sk * dkp1 + skp1, ssk * dkp1 + sskp1]]
-        //                     })
-        //                     .fold(A::zero(), A::add)
-        //             },
-        //         );
-        //     let Schmidt { u, s, q, rank } = q.local_decomp(self.eps);
-        //     let gk_new = u.into_shape((shk.0, dk, rank)).unwrap();
-        //     let mut gkp1_new = q.into_shape((rank, dkp1, shkp1.2)).unwrap();
-        //     nd::Zip::from(gkp1_new.axis_iter_mut(nd::Axis(0)))
-        //         .and(&s)
-        //         .for_each(|mut gkp1v, sv| {
-        //             let sv = A::from_re(*sv);
-        //             gkp1v.map_inplace(|gkp1vj| { *gkp1vj /= sv; });
-        //         });
-        //     self.data[k] = gk_new;
-        //     self.svals[k] = s;
-        //     self.data[k + 1] = gkp1_new;
-        // } else {
-        //     let lkm1 = &self.svals[k - 1];
-        //     let gk = &self.data[k];
-        //     let shk = gk.raw_dim().into_pattern();
-        //     let lk = &self.svals[k];
-        //     let gkp1 = &self.data[k + 1];
-        //     let shkp1 = gkp1.raw_dim().into_pattern();
-        //     let z1 = dk;
-        //     let z2 = shkp1.2;
-        //     let q: nd::Array2<A>
-        //         = nd::Array2::from_shape_fn(
-        //             (shk.0 * dk, dkp1 * shkp1.2),
-        //             |(v_sk, skp1_w)| {
-        //                 let v = v_sk / z1;
-        //                 let sk = v_sk % z1;
-        //                 let skp1 = skp1_w / z2;
-        //                 let w = skp1_w % z2;
-        //                 (0..dk)
-        //                     .cartesian_product(0..dkp1)
-        //                     .cartesian_product(lk.iter().enumerate())
-        //                     .map(|((ssk, sskp1), (u, lku))| {
-        //                         A::from_re(lkm1[v])
-        //                             * gk[[v, ssk, u]]
-        //                             * A::from_re(*lku)
-        //                             * gkp1[[u, sskp1, w]]
-        //                             * op[[sk * dkp1 + skp1, ssk * dkp1 + sskp1]]
-        //                     })
-        //                     .fold(A::zero(), A::add)
-        //             },
-        //         );
-        //     let Schmidt { u, s, q, rank } = q.local_decomp(self.eps);
-        //     let mut gk_new = u.into_shape((shk.0, dk, rank)).unwrap();
-        //     nd::Zip::from(gk_new.axis_iter_mut(nd::Axis(0)))
-        //         .and(lkm1)
-        //         .for_each(|mut gkv, lkm1v| {
-        //             let lkm1v = A::from_re(*lkm1v);
-        //             gkv.map_inplace(|gkvj| { *gkvj /= lkm1v; });
-        //         });
-        //     let mut gkp1_new = q.into_shape((rank, dkp1, shkp1.2)).unwrap();
-        //     nd::Zip::from(gkp1_new.axis_iter_mut(nd::Axis(0)))
-        //         .and(&s)
-        //         .for_each(|mut gkp1v, sv| {
-        //             let sv = A::from_re(*sv);
-        //             gkp1v.map_inplace(|gkp1vj| { *gkp1vj /= sv; });
-        //         });
-        //     self.data[k] = gk_new;
-        //     self.svals[k] = s;
-        //     self.data[k + 1] = gkp1_new;
-        // }
-        // // self.local_renormalize(k);
-        // // self.local_renormalize(k + 1);
             (Self::G2(a, gate_a), Self::G2(b, gate_b)) if a == b => {
                 matches!(
                     (gate_a, gate_b),

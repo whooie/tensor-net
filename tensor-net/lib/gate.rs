@@ -47,6 +47,11 @@ pub enum Gate {
     /// `CZ(k)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
     /// control.
     CZ(usize),
+    /// A Haar-random two-qubit unitary.
+    ///
+    /// `Haar2(k)` applies the unitary to the subspace corresponding to the
+    /// `k`-th and `k + 1`-th qubits.
+    Haar2(usize),
 }
 
 impl Gate {
@@ -83,6 +88,9 @@ impl Gate {
     /// Return `true` if `self` is `CZ`.
     pub fn is_cz(&self) -> bool { matches!(self, Self::CZ(..)) }
 
+    /// Return `true` if `self` is `Haar2`.
+    pub fn is_haar2(&self) -> bool { matches!(self, Self::Haar2(..)) }
+
     /// Return the [kind][G] of `self`.
     pub fn kind(&self) -> G {
         use G::*;
@@ -100,6 +108,7 @@ impl Gate {
             Self::CX(..) => Q2(CX),
             Self::CXRev(..) => Q2(CXRev),
             Self::CZ(..) => Q2(CZ),
+            Self::Haar2(..) => Q2(Haar2),
         }
     }
 
@@ -200,6 +209,8 @@ pub enum G2 {
     CXRev,
     /// Z-controlled π rotation about Z.
     CZ,
+    /// A Haar-random two-qubit unitary.
+    Haar2,
 }
 
 impl G2 {
@@ -211,6 +222,9 @@ impl G2 {
 
     /// Returns `true` if `self` is `CZ`.
     pub fn is_cz(&self) -> bool { matches!(self, Self::CZ) }
+
+    /// Returns `true` if `self` is `Haar2`.
+    pub fn is_haar2(&self) -> bool { matches!(self, Self::Haar2) }
 }
 
 /// Identifier for a single gate.
@@ -269,6 +283,34 @@ impl G {
 
     /// Returns `true` if `self` is `CZ`.
     pub fn is_cz(&self) -> bool { matches!(self, Self::Q2(g) if g.is_cz()) }
+
+    /// Returns `true` if `self` is `Haar2`.
+    pub fn is_haar2(&self) -> bool { matches!(self, Self::Q2(g) if g.is_haar2()) }
+}
+
+/// An exact one- or two-qubit unitary.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExactGate {
+    /// Array is 2x2, applied to a single qubit.
+    Q1(usize, nd::Array2<C64>),
+    /// Array is 4x4, applied to neighboring qubits with the index identifying
+    /// the left.
+    Q2(usize, nd::Array2<C64>),
+}
+
+impl ExactGate {
+    /// Sample a random gate uniformly from a set.
+    pub fn sample_from<'a, I, G, R>(kinds: I, arg: G::QubitArg, rng: &mut R)
+        -> Self
+    where
+        I: IntoIterator<Item = &'a G>,
+        G: GateToken<Self> + 'a,
+        R: Rng + ?Sized
+    {
+        let kinds: Vec<&G> = kinds.into_iter().collect();
+        let n = kinds.len();
+        kinds[rng.gen_range(0..n)].sample(arg, rng)
+    }
 }
 
 /// Describes the general behavior for a gate identifier token, e.g. [`G1`] and
@@ -341,6 +383,51 @@ impl GateToken<Gate> for G1 {
     }
 }
 
+impl GateToken<ExactGate> for G1 {
+    type QubitArg = usize;
+
+    /// General rotation gates will sample their angles uniformly from `[0,
+    /// 2π)`. [`U`][Self::U] gates will sample all three rotation angles
+    /// independently.
+    fn sample<R>(&self, op: usize, rng: &mut R) -> ExactGate
+    where R: Rng + ?Sized
+    {
+        use std::f64::consts::TAU;
+        match self {
+            Self::U => {
+                let alpha: f64 = TAU * rng.gen::<f64>();
+                let beta: f64 = TAU * rng.gen::<f64>();
+                let gamma: f64 = TAU * rng.gen::<f64>();
+                ExactGate::Q1(op, make_u(alpha, beta, gamma))
+            },
+            Self::H => ExactGate::Q1(op, Lazy::force(&HMAT).clone()),
+            Self::X => ExactGate::Q1(op, Lazy::force(&XMAT).clone()),
+            Self::Z => ExactGate::Q1(op, Lazy::force(&ZMAT).clone()),
+            Self::S => ExactGate::Q1(op, Lazy::force(&SMAT).clone()),
+            Self::SInv => ExactGate::Q1(op, Lazy::force(&SINVMAT).clone()),
+            Self::XRot => ExactGate::Q1(op, make_xrot(TAU * rng.gen::<f64>())),
+            Self::ZRot => ExactGate::Q1(op, make_zrot(TAU * rng.gen::<f64>())),
+        }
+    }
+
+    fn random<R>(rng: &mut R) -> Self
+    where R: Rng + ?Sized
+    {
+        match rng.gen_range(0..8_usize) {
+            0 => Self::U,
+            1 => Self::H,
+            2 => Self::X,
+            3 => Self::Z,
+            4 => Self::S,
+            5 => Self::SInv,
+            6 => Self::XRot,
+            7 => Self::ZRot,
+            _ => unreachable!(),
+        }
+    }
+}
+
+
 impl GateToken<Gate> for G2 {
     type QubitArg = usize;
 
@@ -351,16 +438,45 @@ impl GateToken<Gate> for G2 {
             Self::CX => Gate::CX(op),
             Self::CXRev => Gate::CXRev(op),
             Self::CZ => Gate::CZ(op),
+            Self::Haar2 => Gate::Haar2(op),
         }
     }
 
     fn random<R>(rng: &mut R) -> Self
     where R: Rng + ?Sized
     {
-        match rng.gen_range(0..3_usize) {
+        match rng.gen_range(0..4_usize) {
             0 => Self::CX,
             1 => Self::CXRev,
             2 => Self::CZ,
+            3 => Self::Haar2,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl GateToken<ExactGate> for G2 {
+    type QubitArg = usize;
+
+    fn sample<R>(&self, op: Self::QubitArg, rng: &mut R) -> ExactGate
+    where R: Rng + ?Sized
+    {
+        match self {
+            Self::CX => ExactGate::Q2(op, Lazy::force(&CXMAT).clone()),
+            Self::CXRev => ExactGate::Q2(op, Lazy::force(&CXREVMAT).clone()),
+            Self::CZ => ExactGate::Q2(op, Lazy::force(&CZMAT).clone()),
+            Self::Haar2 => ExactGate::Q2(op, haar(2, rng)),
+        }
+    }
+
+    fn random<R>(rng: &mut R) -> Self
+    where R: Rng + ?Sized
+    {
+        match rng.gen_range(0..4_usize) {
+            0 => Self::CX,
+            1 => Self::CXRev,
+            2 => Self::CZ,
+            3 => Self::Haar2,
             _ => unreachable!(),
         }
     }
