@@ -46,7 +46,7 @@
 //! use num_traits::{ Zero, One };
 //! use rand::thread_rng;
 //! use tensor_net::mps::*;
-//! use tensor_net::tensor3::Idx;
+//! use tensor_net::tensor::Idx;
 //!
 //! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 //! struct Q(usize); // `Q(k)` is a qubit degree of freedom for the `k`-th qubit.
@@ -119,9 +119,8 @@ use crate::{
     ComplexFloatExt,
     circuit::Q,
     gate::{ self, Gate },
-    network3::{ Network, Pool },
-    // pool::Pool,
-    tensor3::{ Idx, Tensor },
+    network::{ Network, Pool },
+    tensor::{ Idx, Tensor },
 };
 
 #[derive(Debug, Error)]

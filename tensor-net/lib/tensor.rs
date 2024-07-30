@@ -7,7 +7,11 @@
 //! accessed by supplying a number of index values (i.e. 1 for a vector, 2 for a
 //! matrix), but allow for more than 2.
 //!
-//! *T*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub></sub>
+//! <blockquote>
+//!   <p style="font-size:20px">
+//!     <i>T</i><sub><i>a</i><sub>1</sub>,...,<i>a</i><sub><i>N</i></sub></sub>
+//!   </p>
+//! </blockquote>
 //!
 //! Linear operations are generalized as well. The usual matrix-matrix,
 //! matrix-vector, vector-matrix, and vector-vector "dot" products are
@@ -15,16 +19,41 @@
 //! where the result is calculated by summing over the values of those indices
 //! and leaving all others untouched.
 //!
-//! *C*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
-//!   = Σ<sub>{*α*<sub>1</sub>,...,*α*<sub>*D*</sub>}</sub>
-//!     *A*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*α*<sub>1</sub>,...,*α*<sub>*D*</sub></sub>
-//!     × *B*<sub>*b*<sub>1</sub>,...,*b*<sub>*M*</sub>,*α*<sub>1</sub>,...,*α*<sub>*D*</sub></sub>
+//! <blockquote>
+//!   <p style="font-size:20px">
+//!     <i>C</i><sub>
+//!       <i>a</i><sub>1</sub>,...,<i>a</i><sub><i>N</i></sub>,
+//!       <i>b</i><sub>1</sub>,...,<i>b</i><sub><i>M</i></sub>
+//!     </sub>
+//!       = Σ<sub><i>α</i><sub>1</sub>,...,<i>α</i><sub><i>D</i></sub></sub> [
+//!         <i>A</i><sub>
+//!           <i>a</i><sub>1</sub>,...,<i>a</i><sub><i>N</i></sub>,
+//!           <i>α</i><sub>1</sub>,...,<i>α</i><sub><i>D</i></sub>
+//!         </sub>
+//!         × <i>B</i><sub>
+//!           <i>b</i><sub>1</sub>,...,<i>b</i><sub><i>M</i></sub>,
+//!           <i>α</i><sub>1</sub>,...,<i>α</i><sub><i>D</i></sub>
+//!         </sub>
+//!       ]
+//!   </p>
+//! </blockquote>
 //!
 //! Likewise, the Kronecker product is generalized to the tensor product.
 //!
-//! *C*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub>,*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
-//!   = *A*<sub>*a*<sub>1</sub>,...,*a*<sub>*N*</sub></sub>
-//!   × *B*<sub>*b*<sub>1</sub>,...,*b*<sub>*M*</sub></sub>
+//! <blockquote>
+//!   <p style="font-size:20px">
+//!     <i>C</i><sub>
+//!       <i>a</i><sub>1</sub>,...,<i>a</i><sub><i>N</i></sub>,
+//!       <i>b</i><sub>1</sub>,...,<i>b</i><sub><i>M</i></sub>
+//!     </sub>
+//!       = <i>A</i><sub>
+//!         <i>a</i><sub>1</sub>,...,<i>a</i><sub><i>N</i></sub>
+//!       </sub>
+//!       × <i>B</i><sub>
+//!         <i>b</i><sub>1</sub>,...,<i>b</i><sub><i>M</i></sub>
+//!       </sub>
+//!   </p>
+//! </blockquote>
 //!
 //! ```
 //! use tensor_net::tensor::{ Idx, Tensor }; // see the Idx trait
@@ -41,7 +70,13 @@
 //!         }
 //!     }
 //!
-//!     fn label(&self) -> String { format!("{:?}", self) }
+//!     fn label(&self) -> String { format!("{self:?}") }
+//! }
+//!
+//! impl std::fmt::Display for Index {
+//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//!         write!(f, "{:?}", self)
+//!     }
 //! }
 //!
 //! let a = Tensor::new([Index::A, Index::B], |_| 1.0).unwrap();
@@ -64,15 +99,15 @@
 //! //  [8, 8, 8, 8, 8]] { A, C }
 //! ```
 
-
 use std::{
     fmt,
     hash::Hash,
     ops::{ Add, Sub, Mul, Range },
 };
-// use itertools::Itertools;
+use itertools::Itertools;
 use ndarray::{ self as nd, Dimension };
 use num_complex::ComplexFloat;
+use num_traits::NumAssign;
 use rustc_hash::FxHashSet as HashSet;
 use thiserror::Error;
 
@@ -131,7 +166,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 ///         }
 ///     }
 ///
-///     fn label(&self) -> String { format!("{:?}", self) }
+///     fn label(&self) -> String { format!("{self:?}") }
 /// }
 /// ```
 /// This representation is safer because it encodes relevant information in
@@ -149,7 +184,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// impl Idx for Index {
 ///     fn dim(&self) -> usize { self.1 }
 ///
-///     fn label(&self) -> String { self.0.clone() }
+///     fn label(&self) -> String { format!("{self:?}") }
 /// }
 /// ```
 /// This representation allows for dynamic mutation of a tensor network, but
@@ -163,13 +198,13 @@ pub trait Idx: Clone + Eq + Hash {
     /// This value must never be zero.
     fn dim(&self) -> usize;
 
-    /// Return an identifying label for the index. This method is used only for
-    /// printing purposes.
-    fn label(&self) -> String;
-
     /// Return an iterator over all possible index values. The default
     /// implementation returns `0..self.dim()`.
     fn iter(&self) -> Range<usize> { 0..self.dim() }
+
+    /// Return an identifying label for the index. This method is used only for
+    /// printing purposes.
+    fn label(&self) -> String;
 }
 
 /// A dynamically dimensioned tensor index type.
@@ -188,7 +223,7 @@ pub struct DynIdx(
 impl Idx for DynIdx {
     fn dim(&self) -> usize { self.1 }
 
-    fn label(&self) -> String { self.0.clone() }
+    fn label(&self) -> String { format!("{self:?}") }
 }
 
 impl<T> From<(T, usize)> for DynIdx
@@ -200,151 +235,23 @@ where T: ToString
     }
 }
 
-/// Basic implementation of an abstract tensor quantity.
-///
-/// A `Tensor<T, A>` consists of some number of quantities of type `A` and a
-/// series of indices belonging to a type `T` that implements [`Idx`].
-///
-/// This implementation distinguishes between rank 0 (scalar) and rank > 0
-/// (array) quantities for some small operational benefits, but otherwise lives
-/// in an abstraction layer one step above concrete array representations. No
-/// parallelism or GPU computation is offered.
-#[derive(Clone, PartialEq, Eq)]
-pub struct Tensor<T, A>(TensorData<T, A>);
+/// An element of a [`Tensor`].
+pub trait Elem: Copy + Clone + NumAssign + 'static { }
 
-impl<T, A> fmt::Debug for Tensor<T, A>
-where
-    T: fmt::Debug,
-    A: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Tensor(")?;
-        match &self.0 {
-            TensorData::Scalar(_) => {
-                self.0.fmt(f)?;
-            },
-            TensorData::Tensor(..) => {
-                writeln!(f)?;
-                self.0.fmt(f)?;
-                writeln!(f)?;
-            },
-        }
-        write!(f, ")")?;
-        Ok(())
-    }
-}
+impl<T> Elem for T
+where T: Copy + Clone + NumAssign + 'static
+{ }
 
-impl<T, A> fmt::Display for Tensor<T, A>
-where
-    T: Idx,
-    A: fmt::Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum TensorData<T, A> {
     Scalar(A),
     Tensor(Vec<T>, nd::ArrayD<A>),
 }
 
-impl<T, A> fmt::Debug for TensorData<T, A>
-where
-    T: fmt::Debug,
-    A: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Scalar(a) => {
-                a.fmt(f)?;
-                write!(f, ", type=scalar, rank=0, indices=[]")?;
-            },
-            Self::Tensor(idxs, a) => {
-                a.fmt(f)?;
-                write!(
-                    f,
-                    ",\ntype=tensor, rank={}, indices={:?}",
-                    idxs.len(),
-                    idxs,
-                )?;
-            },
-        }
-        Ok(())
-    }
-}
-
-impl<T, A> fmt::Display for TensorData<T, A>
+impl<T, A> TensorData<T, A>
 where
     T: Idx,
-    A: fmt::Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Scalar(a) => {
-                a.fmt(f)?;
-                write!(f, " {{ }}")?;
-            },
-            Self::Tensor(idxs, a) => {
-                a.fmt(f)?;
-                write!(f, " {{ ")?;
-                let n_idxs = idxs.len();
-                for (k, idx) in idxs.iter().enumerate() {
-                    write!(f, "{}", idx.label())?;
-                    if k < n_idxs - 1 { write!(f, ", ")?; }
-                }
-                write!(f, " }}")?;
-            },
-        }
-        Ok(())
-    }
-}
-
-/// Iterator type over the indices of a given [`Tensor`].
-///
-/// The iterator item type is `&T`.
-pub struct Indices<'a, T>(IndicesData<'a, T>);
-
-enum IndicesData<'a, T> {
-    Scalar,
-    Tensor(std::slice::Iter<'a, T>),
-}
-
-impl<'a, T> Iterator for Indices<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.0 {
-            IndicesData::Scalar => None,
-            IndicesData::Tensor(iter) => iter.next(),
-        }
-    }
-}
-
-/// Iterator type over mutable references to the indices of a given [`Tensor`].
-///
-/// The iterator item type is `&mut T`.
-pub struct IndicesMut<'a, T>(IndicesMutData<'a, T>);
-
-enum IndicesMutData<'a, T> {
-    Scalar,
-    Tensor(std::slice::IterMut<'a, T>),
-}
-
-impl<'a, T> Iterator for IndicesMut<'a, T> {
-    type Item = &'a mut T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.0 {
-            IndicesMutData::Scalar => None,
-            IndicesMutData::Tensor(iter) => iter.next(),
-        }
-    }
-}
-
-impl<T, A> TensorData<T, A>
-where T: Idx
+    A: Elem,
 {
     fn new<I, F>(indices: I, mut elems: F) -> TensorResult<Self>
     where
@@ -365,8 +272,8 @@ where T: Idx
             let data: nd::ArrayD<A>
                 = nd::ArrayD::from_shape_fn(
                     shape,
-                    |idxs| elems(idxs.as_array_view().as_slice().unwrap()))
-                ;
+                    |idxs| elems(idxs.as_array_view().as_slice().unwrap())
+                );
             Ok(Self::Tensor(indices, data))
         }
     }
@@ -386,8 +293,8 @@ where T: Idx
             let data: nd::ArrayD<A>
                 = nd::ArrayD::from_shape_fn(
                     shape,
-                    |idxs| elems(idxs.as_array_view().as_slice().unwrap()))
-                ;
+                    |idxs| elems(idxs.as_array_view().as_slice().unwrap())
+                );
             Self::Tensor(indices, data)
         }
     }
@@ -425,10 +332,16 @@ where T: Idx
         D: nd::Dimension,
     {
         let indices: Vec<T> = indices.into_iter().collect();
-        Self::Tensor(indices, array.into_dyn())
+        if indices.is_empty() {
+            Self::Scalar(array.into_iter().next().unwrap())
+        } else {
+            Self::Tensor(indices, array.into_dyn())
+        }
     }
 
     fn is_scalar(&self) -> bool { matches!(self, Self::Scalar(_)) }
+
+    fn is_tensor(&self) -> bool { matches!(self, Self::Tensor(..)) }
 
     fn has_index(&self, index: &T) -> bool {
         match self {
@@ -501,7 +414,9 @@ where T: Idx
     }
 
     fn map<F, B>(&self, mut f: F) -> TensorData<T, B>
-    where F: FnMut(&[usize], &A) -> B
+    where
+        F: FnMut(&[usize], &A) -> B,
+        B: Elem,
     {
         match self {
             Self::Scalar(a) => TensorData::Scalar(f(&[], a)),
@@ -513,7 +428,7 @@ where T: Idx
                     .into_dyn()
                     .into_shape(data.raw_dim())
                     .unwrap()
-            )
+            ),
         }
     }
 
@@ -556,20 +471,16 @@ where T: Idx
         }
     }
 
-    fn do_contract<B, C>(
+    fn do_contract(
         idx_common: Vec<T>,
         mut idxs_a: Vec<T>,
         mut a: nd::ArrayD<A>,
         mut idxs_b: Vec<T>,
-        mut b: nd::ArrayD<B>,
-    ) -> TensorData<T, C>
-    where
-        A: nd::LinalgScalar,
-        B: nd::LinalgScalar,
-        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
+        mut b: nd::ArrayD<A>,
+    ) -> Self
     {
-        // swap common indices and corresponding axes to the rightmost
-        // positions in a and the leftmost in b
+        // swap common indices and corresponding axes to the rightmost positions
+        // in a and the leftmost in b
         let n_idx_a = idxs_a.len();
         let n_common = idx_common.len();
         let mut k_source: usize;
@@ -603,24 +514,22 @@ where T: Idx
             = idx_common.iter().map(Idx::dim).product();
         let dim_noncomm_b
             = idxs_b.iter().skip(n_common).map(Idx::dim).product();
-        let a: nd::Array2<A>
-            = a.into_iter()
-            .collect::<nd::Array1<A>>()
+        let a: nd::CowArray<A, nd::Ix2>
+            = a.as_standard_layout()
             .into_shape((dim_noncomm_a, dim_comm))
             .unwrap();
-        let b: nd::Array2<B>
-            = b.into_iter()
-            .collect::<nd::Array1<B>>()
+        let b: nd::CowArray<A, nd::Ix2>
+            = b.as_standard_layout()
             .into_shape((dim_comm, dim_noncomm_b))
             .unwrap();
-        let c: nd::Array2<C> = a.dot(&b);
+        let c: nd::Array2<A> = a.dot(&b);
         let new_shape: Vec<usize>
             = idxs_a.iter().take(n_idx_a - n_common)
             .chain(idxs_b.iter().skip(n_common))
             .map(Idx::dim)
             .collect();
         if new_shape.is_empty() {
-            let c: C = c.into_iter().next().unwrap();
+            let c: A = c.into_iter().next().unwrap();
             TensorData::Scalar(c)
         } else {
             let new_idxs: Vec<T>
@@ -630,122 +539,19 @@ where T: Idx
             let c = c.into_shape(new_shape).unwrap();
             TensorData::Tensor(new_idxs, c)
         }
-
-        // let mut k_source: usize;
-        // for (k_target, idx) in idx_common.iter().enumerate() {
-        //     k_source
-        //         = idxs_a.iter()
-        //         .enumerate()
-        //         .find_map(|(k_source, idx_source)| {
-        //             (idx_source == idx).then_some(k_source)
-        //         })
-        //         .unwrap();
-        //     idxs_a.swap(k_source, k_target);
-        //     a.swap_axes(k_source, k_target);
-        //
-        //     k_source
-        //         = idxs_b.iter()
-        //         .enumerate()
-        //         .find_map(|(k_source, idx_source)| {
-        //             (idx_source == idx).then_some(k_source)
-        //         })
-        //         .unwrap();
-        //     idxs_b.swap(k_source, k_target);
-        //     b.swap_axes(k_source, k_target);
-        // }
-        //
-        // // construct the new tensor component-wise
-        // let n_ix: usize = idx_common.len();
-        // let n_idx_a: usize = idxs_a.len() - n_ix;
-        // let n_idx_b: usize = idxs_b.len() - n_ix;
-        // let new_shape: Vec<usize>
-        //     = idxs_a.iter().skip(n_ix)
-        //     .chain(idxs_b.iter().skip(n_ix))
-        //     .map(|idx| idx.dim())
-        //     .collect();
-        // if new_shape.is_empty() {
-        //     let c: C
-        //         = idx_common.iter()
-        //         .map(|idx| idx.iter())
-        //         .multi_cartesian_product()
-        //         .map(|k_sum| {
-        //             a[k_sum.deref()].clone() * b[k_sum.deref()].clone()
-        //         })
-        //         .sum();
-        //     TensorData::Scalar(c)
-        // } else {
-        //     let mut k_res: Vec<usize> = vec![0; n_idx_a + n_idx_b];
-        //     let mut k_a: Vec<usize> = vec![0; n_ix + n_idx_a];
-        //     let mut k_b: Vec<usize> = vec![0; n_ix + n_idx_b];
-        //     let new_data: nd::ArrayD<C>
-        //         = nd::ArrayD::from_shape_fn(
-        //             new_shape,
-        //             |k_res_dim| {
-        //                 k_res.iter_mut()
-        //                     .zip(k_res_dim.as_array_view())
-        //                     .for_each(|(k_res_ref, k_res_dim_ref)| {
-        //                         *k_res_ref = *k_res_dim_ref;
-        //                     });
-        //                 k_a.iter_mut()
-        //                     .skip(n_ix)
-        //                     .zip(k_res.iter().take(n_idx_a))
-        //                     .for_each(|(k_a_ref, k_res_ref)| {
-        //                         *k_a_ref = *k_res_ref;
-        //                     });
-        //                 k_b.iter_mut()
-        //                     .skip(n_ix)
-        //                     .zip(k_res.iter().skip(n_idx_a).take(n_idx_b))
-        //                     .for_each(|(k_b_ref, k_res_ref)| {
-        //                         *k_b_ref = *k_res_ref;
-        //                     });
-        //                 idx_common.iter()
-        //                     .map(|idx| idx.iter())
-        //                     .multi_cartesian_product()
-        //                     .map(|k_sum| {
-        //                         k_a.iter_mut()
-        //                             .take(n_ix)
-        //                             .zip(k_sum.iter())
-        //                             .for_each(|(k_a_ref, k_sum_ref)| {
-        //                                 *k_a_ref = *k_sum_ref;
-        //                             });
-        //                         k_b.iter_mut()
-        //                             .take(n_ix)
-        //                             .zip(k_sum.iter())
-        //                             .for_each(|(k_b_ref, k_sum_ref)| {
-        //                                 *k_b_ref = *k_sum_ref;
-        //                             });
-        //                         a[k_a.deref()].clone()
-        //                             * b[k_b.deref()].clone()
-        //                     })
-        //                     .sum::<C>()
-        //             }
-        //         );
-        //     let new_idxs: Vec<T>
-        //         = idxs_a.into_iter()
-        //         .skip(n_ix)
-        //         .chain(idxs_b.into_iter().skip(n_ix))
-        //         .collect();
-        //     TensorData::Tensor(new_idxs, new_data)
-        // }
     }
 
-    fn contract<B, C>(self, other: TensorData<T, B>)
-        -> TensorResult<TensorData<T, C>>
-    where
-        A: Mul<B, Output = C> + nd::LinalgScalar,
-        B: nd::LinalgScalar,
-        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
-    {
+    fn contract(self, other: Self) -> TensorResult<Self> {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 Ok(TensorData::Scalar(a * b))
             },
             (TensorData::Scalar(a), TensorData::Tensor(idxs, b)) => {
-                let mul: nd::ArrayD<C> = b.mapv(|bk| a * bk);
+                let mul: nd::ArrayD<A> = b.mapv(|bk| a * bk);
                 Ok(TensorData::Tensor(idxs, mul))
             },
             (TensorData::Tensor(idxs, a), TensorData::Scalar(b)) => {
-                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b);
+                let mul: nd::ArrayD<A> = a.mapv(|ak| ak * b);
                 Ok(TensorData::Tensor(idxs, mul))
             },
             (TensorData::Tensor(idxs_a, a), TensorData::Tensor(idxs_b, b)) => {
@@ -762,55 +568,42 @@ where T: Idx
         }
     }
 
-    fn do_tensor_prod<B, C>(
+    fn do_tensor_prod(
         mut idxs_a: Vec<T>,
         a: nd::ArrayD<A>,
         mut idxs_b: Vec<T>,
-        b: nd::ArrayD<B>,
-    ) -> TensorData<T, C>
-    where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
+        b: nd::ArrayD<A>,
+    ) -> Self
     {
-        let n_idxs_a = idxs_a.len();
         idxs_a.append(&mut idxs_b);
-        unsafe {
-            TensorData::<T, C>::new_unchecked(
-                idxs_a,
-                |k_all| {
-                    a[&k_all[..n_idxs_a]].clone()
-                        * b[&k_all[n_idxs_a..]].clone()
-                }
-            )
-        }
+        let new_shape: Vec<usize> = idxs_a.iter().map(Idx::dim).collect();
+        let c: nd::ArrayD<A>
+            = a.iter()
+            .cartesian_product(b.iter())
+            .map(|(ak, bk)| *ak * *bk)
+            .collect::<nd::Array1<A>>()
+            .into_shape(new_shape)
+            .unwrap();
+        TensorData::Tensor(idxs_a, c)
     }
 
-    fn tensor_prod<B, C>(self, other: TensorData<T, B>)
-        -> TensorResult<TensorData<T, C>>
-    where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-    {
+    fn tensor_prod(self, other: Self) -> TensorResult<Self> {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 Ok(TensorData::Scalar(a * b))
             },
             (TensorData::Scalar(a), TensorData::Tensor(idxs, b)) => {
-                let mul: nd::ArrayD<C> = b.mapv(|bk| a.clone() * bk);
+                let mul: nd::ArrayD<A> = b.mapv(|bk| a * bk);
                 Ok(TensorData::Tensor(idxs, mul))
             },
             (TensorData::Tensor(idxs, a), TensorData::Scalar(b)) => {
-                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b.clone());
+                let mul: nd::ArrayD<A> = a.mapv(|ak| ak * b);
                 Ok(TensorData::Tensor(idxs, mul))
             },
             (TensorData::Tensor(idxs_a, a), TensorData::Tensor(idxs_b, b)) => {
                 // find common indices, error if some
-                let idx_common: Vec<T>
-                    = idxs_a.iter()
-                    .filter(|idx| idxs_b.contains(idx))
-                    .cloned()
-                    .collect();
-                idx_common.is_empty()
+                idxs_a.iter()
+                    .all(|idx| !idxs_b.contains(idx))
                     .then_some(())
                     .ok_or(MatchingIndices)?;
                 Ok(Self::do_tensor_prod(idxs_a, a, idxs_b, b))
@@ -818,22 +611,17 @@ where T: Idx
         }
     }
 
-    fn multiply<B, C>(self, other: TensorData<T, B>) -> TensorData<T, C>
-    where
-        A: Mul<B, Output = C> + nd::LinalgScalar,
-        B: nd::LinalgScalar,
-        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
-    {
+    fn multiply(self, other: Self) -> Self {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 TensorData::Scalar(a * b)
             },
             (TensorData::Scalar(a), TensorData::Tensor(idxs, b)) => {
-                let mul: nd::ArrayD<C> = b.mapv(|bk| a * bk);
+                let mul: nd::ArrayD<A> = b.mapv(|bk| a * bk);
                 TensorData::Tensor(idxs, mul)
             },
             (TensorData::Tensor(idxs, a), TensorData::Scalar(b)) => {
-                let mul: nd::ArrayD<C> = a.mapv(|ak| ak * b);
+                let mul: nd::ArrayD<A> = a.mapv(|ak| ak * b);
                 TensorData::Tensor(idxs, mul)
             },
             (TensorData::Tensor(idxs_a, a), TensorData::Tensor(idxs_b, b)) => {
@@ -851,10 +639,7 @@ where T: Idx
         }
     }
 
-    fn add_checked<B, C>(self, other: TensorData<T, B>)
-        -> TensorResult<TensorData<T, C>>
-    where A: Add<B, Output = C>
-    {
+    fn add_checked(self, other: Self) -> TensorResult<Self> {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 Ok(TensorData::Scalar(a + b))
@@ -866,7 +651,7 @@ where T: Idx
                 Err(IncompatibleIndicesAdd)
             },
             (
-                TensorData::Tensor(idxs_a, a),
+                TensorData::Tensor(idxs_a, mut a),
                 TensorData::Tensor(mut idxs_b, mut b),
             ) => {
                 if idxs_a.len() != idxs_b.len()
@@ -888,27 +673,13 @@ where T: Idx
                     idxs_b.swap(k_a, k_b);
                     b.swap_axes(k_a, k_b);
                 }
-                let new_shape: Vec<usize>
-                    = idxs_a.iter().map(|idx| idx.dim()).collect();
-                let new_data: nd::ArrayD<C>
-                    = unsafe {
-                        nd::ArrayD::from_shape_vec_unchecked(
-                            new_shape,
-                            a.into_iter()
-                                .zip(b)
-                                .map(|(ak, bk)| ak + bk)
-                                .collect()
-                        )
-                    };
-                Ok(TensorData::Tensor(idxs_a, new_data))
+                a += &b;
+                Ok(TensorData::Tensor(idxs_a, a))
             },
         }
     }
 
-    fn sub_checked<B, C>(self, other: TensorData<T, B>)
-        -> TensorResult<TensorData<T, C>>
-    where A: Sub<B, Output = C>
-    {
+    fn sub_checked(self, other: Self) -> TensorResult<Self> {
         match (self, other) {
             (TensorData::Scalar(a), TensorData::Scalar(b)) => {
                 Ok(TensorData::Scalar(a - b))
@@ -920,7 +691,7 @@ where T: Idx
                 Err(IncompatibleIndicesSub)
             },
             (
-                TensorData::Tensor(idxs_a, a),
+                TensorData::Tensor(idxs_a, mut a),
                 TensorData::Tensor(mut idxs_b, mut b),
             ) => {
                 if idxs_a.len() != idxs_b.len()
@@ -942,19 +713,8 @@ where T: Idx
                     idxs_b.swap(k_a, k_b);
                     b.swap_axes(k_a, k_b);
                 }
-                let new_shape: Vec<usize>
-                    = idxs_a.iter().map(|idx| idx.dim()).collect();
-                let new_data: nd::ArrayD<C>
-                    = unsafe {
-                        nd::ArrayD::from_shape_vec_unchecked(
-                            new_shape,
-                            a.into_iter()
-                                .zip(b)
-                                .map(|(ak, bk)| ak - bk)
-                                .collect()
-                        )
-                    };
-                Ok(TensorData::Tensor(idxs_a, new_data))
+                a -= &b;
+                Ok(TensorData::Tensor(idxs_a, a))
             },
         }
     }
@@ -1011,28 +771,26 @@ where
     }
 }
 
-impl<T, A, B, C> Mul<TensorData<T, B>> for TensorData<T, A>
+impl<T, A> Mul<TensorData<T, A>> for TensorData<T, A>
 where
     T: Idx,
-    A: Mul<B, Output = C> + nd::LinalgScalar,
-    B: nd::LinalgScalar,
-    nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
+    A: Elem,
 {
-    type Output = TensorData<T, C>;
+    type Output = TensorData<T, A>;
 
-    fn mul(self, other: TensorData<T, B>) -> Self::Output {
+    fn mul(self, other: TensorData<T, A>) -> Self::Output {
         self.multiply(other)
     }
 }
 
-impl<T, A, B, C> Add<TensorData<T, B>> for TensorData<T, A>
+impl<T, A> Add<TensorData<T, A>> for TensorData<T, A>
 where
     T: Idx,
-    A: Add<B, Output = C>,
+    A: Elem,
 {
-    type Output = TensorData<T, C>;
+    type Output = TensorData<T, A>;
 
-    fn add(self, other: TensorData<T, B>) -> Self::Output {
+    fn add(self, other: TensorData<T, A>) -> Self::Output {
         match self.add_checked(other) {
             Ok(res) => res,
             Err(err) => panic!("{}", err),
@@ -1040,14 +798,14 @@ where
     }
 }
 
-impl<T, A, B, C> Sub<TensorData<T, B>> for TensorData<T, A>
+impl<T, A> Sub<TensorData<T, A>> for TensorData<T, A>
 where
     T: Idx,
-    A: Sub<B, Output = C>,
+    A: Elem,
 {
-    type Output = TensorData<T, C>;
+    type Output = TensorData<T, A>;
 
-    fn sub(self, other: TensorData<T, B>) -> Self::Output {
+    fn sub(self, other: TensorData<T, A>) -> Self::Output {
         match self.sub_checked(other) {
             Ok(res) => res,
             Err(err) => panic!("{}", err),
@@ -1055,12 +813,52 @@ where
     }
 }
 
+impl<T, A> fmt::Display for TensorData<T, A>
+where
+    T: fmt::Display,
+    A: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Scalar(a) => {
+                a.fmt(f)?;
+                write!(f, " {{ }}")?;
+            },
+            Self::Tensor(idxs, a) => {
+                a.fmt(f)?;
+                write!(f, " {{ ")?;
+                let n_idxs = idxs.len();
+                for (k, idx) in idxs.iter().enumerate() {
+                    idx.fmt(f)?;
+                    if k < n_idxs - 1 { write!(f, ", ")?; }
+                }
+                write!(f, " }}")?;
+            },
+        }
+        Ok(())
+    }
+}
+
+/// Basic implementation of an abstract tensor object.
+///
+/// A `Tensor<T, A>` consists of some number of numerical quantities of type `A`
+/// and a series of indices belonging to a type `T` that implements [`Idx`].
+///
+/// This implementation distinguishes between rank 0 (scalar) and rank > 0
+/// (array) quantities for some small operational benefits, but otherwise lives
+/// in an abstraction layer one step above concrete array representations. No
+/// parallelism or GPU computation is offered.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Tensor<T, A>(TensorData<T, A>);
+
 impl<T, A> From<TensorData<T, A>> for Tensor<T, A> {
     fn from(data: TensorData<T, A>) -> Self { Self(data) }
 }
 
 impl<T, A> Tensor<T, A>
-where T: Idx
+where
+    T: Idx,
+    A: Elem,
 {
     /// Create a new tensor using a function over given indices.
     pub fn new<I, F>(indices: I, elems: F) -> TensorResult<Self>
@@ -1105,9 +903,9 @@ where T: Idx
     ///
     /// # Safety
     /// This function does not check for duplicate indices or that the
-    /// dimensions of the array match those of the indices. Failure to meet
+    /// dimensions of the array match those of the indices. Failure to meed
     /// these conditions will cause unrecoverable errors in all arithmetic
-    /// operations and book-keeping within tensor networks. A call to this
+    /// operations and book-keeping within tensor networks. A call to thsi
     /// function is safe iff all indices are unique and each is aligned to an
     /// axis of size equal to its dimension in the data array.
     pub unsafe fn from_array_unchecked<I, D>(indices: I, array: nd::Array<A, D>)
@@ -1119,7 +917,7 @@ where T: Idx
         TensorData::from_array_unchecked(indices, array).into()
     }
 
-    /// Return `true` if `self` has rank 0.
+    /// Return `true` if `self has rank 0.
     ///
     /// This is equivalent to `self.rank() == 0` and `self.shape().is_empty()`.
     pub fn is_scalar(&self) -> bool { self.0.is_scalar() }
@@ -1192,7 +990,9 @@ where T: Idx
     /// Apply a mapping function to the (indexed) elements of `self`, returning
     /// a new array.
     pub fn map<F, B>(&self, f: F) -> Tensor<T, B>
-    where F: FnMut(&[usize], &A) -> B
+    where
+        F: FnMut(&[usize], &A) -> B,
+        B: Elem,
     {
         self.0.map(f).into()
     }
@@ -1229,13 +1029,7 @@ where T: Idx
     /// the ordering of indices within these groups is not preserved.
     ///
     /// Fails if no common indices exist.
-    pub fn contract<B, C>(self, other: Tensor<T, B>)
-        -> TensorResult<Tensor<T, C>>
-    where
-        A: Mul<B, Output = C> + nd::LinalgScalar,
-        B: nd::LinalgScalar,
-        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
-    {
+    pub fn contract(self, other: Self) -> TensorResult<Self> {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.contract(rhs).map(|data| data.into())
     }
@@ -1248,12 +1042,7 @@ where T: Idx
     /// `other`.
     ///
     /// Fails if common indices exist.
-    pub fn tensor_prod<B, C>(self, other: Tensor<T, B>)
-        -> TensorResult<Tensor<T, C>>
-    where
-        A: Clone + Mul<B, Output = C>,
-        B: Clone,
-    {
+    pub fn tensor_prod(self, other: Self) -> TensorResult<Self> {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.tensor_prod(rhs).map(|data| data.into())
     }
@@ -1263,12 +1052,7 @@ where T: Idx
     /// This product is an ordinary tensor [contraction][Self::contract] if
     /// common indices exist (or ordinary multiplication if either is a scalar),
     /// otherwise a [tensor product][Self::tensor_prod].
-    pub fn multiply<B, C>(self, other: Tensor<T, B>) -> Tensor<T, C>
-    where
-        A: Mul<B, Output = C> + nd::LinalgScalar,
-        B: nd::LinalgScalar,
-        nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
-    {
+    pub fn multiply(self, other: Self) -> Self {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.multiply(rhs).into()
     }
@@ -1276,10 +1060,7 @@ where T: Idx
     /// Compute the sum of `self` and `other`, consuming both.
     ///
     /// Fails if either tensor holds an index not held by the other.
-    pub fn add_checked<B, C>(self, other: Tensor<T, B>)
-        -> TensorResult<Tensor<T, C>>
-    where A: Add<B, Output = C>
-    {
+    pub fn add_checked(self, other: Self) -> TensorResult<Self> {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.add_checked(rhs).map(|data| data.into())
     }
@@ -1287,10 +1068,7 @@ where T: Idx
     /// Compute the difference of `self` and `other`, consuming both.
     ///
     /// Fails if either tensor holds an index not held by the other.
-    pub fn sub_checked<B, C>(self, other: Tensor<T, B>)
-        -> TensorResult<Tensor<T, C>>
-    where A: Sub<B, Output = C>
-    {
+    pub fn sub_checked(self, other: Self) -> TensorResult<Self> {
         let (Tensor(lhs), Tensor(rhs)) = (self, other);
         lhs.sub_checked(rhs).map(|data| data.into())
     }
@@ -1331,46 +1109,90 @@ where
     pub fn conj(&self) -> Self { self.0.conj().into() }
 }
 
-impl<T, A, B, C> Mul<Tensor<T, B>> for Tensor<T, A>
+impl<T, A> Mul<Tensor<T, A>> for Tensor<T, A>
 where
     T: Idx,
-    A: Mul<B, Output = C> + nd::LinalgScalar,
-    B: nd::LinalgScalar,
-    nd::Array2<A>: nd::linalg::Dot<nd::Array2<B>, Output = nd::Array2<C>>,
+    A: Elem,
 {
-    type Output = Tensor<T, C>;
+    type Output = Tensor<T, A>;
 
-    fn mul(self, other: Tensor<T, B>) -> Self::Output {
-        self.multiply(other)
+    fn mul(self, other: Tensor<T, A>) -> Self::Output {
+        (self.0 * other.0).into()
     }
 }
 
-impl<T, A, B, C> Add<Tensor<T, B>> for Tensor<T, A>
+impl<T, A> Add<Tensor<T, A>> for Tensor<T, A>
 where
     T: Idx,
-    A: Add<B, Output = C>,
+    A: Elem,
 {
-    type Output = Tensor<T, C>;
+    type Output = Tensor<T, A>;
 
-    fn add(self, other: Tensor<T, B>) -> Self::Output {
-        match self.add_checked(other) {
-            Ok(res) => res,
-            Err(err) => panic!("{}", err),
+    fn add(self, other: Tensor<T, A>) -> Self::Output {
+        (self.0 + other.0).into()
+    }
+}
+
+impl<T, A> Sub<Tensor<T, A>> for Tensor<T, A>
+where
+    T: Idx,
+    A: Elem,
+{
+    type Output = Tensor<T, A>;
+
+    fn sub(self, other: Tensor<T, A>) -> Self::Output {
+        (self.0 - other.0).into()
+    }
+}
+
+impl<T, A> fmt::Display for Tensor<T, A>
+where
+    T: fmt::Display,
+    A: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+enum IndicesData<'a, T> {
+    Scalar,
+    Tensor(std::slice::Iter<'a, T>),
+}
+
+/// Iterator type over the indices of a given [`Tensor`].
+///
+/// The iterator item type is `&T`.
+pub struct Indices<'a, T>(IndicesData<'a, T>);
+
+impl<'a, T> Iterator for Indices<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.0 {
+            IndicesData::Scalar => None,
+            IndicesData::Tensor(iter) => iter.next(),
         }
     }
 }
 
-impl<T, A, B, C> Sub<Tensor<T, B>> for Tensor<T, A>
-where
-    T: Idx,
-    A: Sub<B, Output = C>,
-{
-    type Output = Tensor<T, C>;
+enum IndicesMutData<'a, T> {
+    Scalar,
+    Tensor(std::slice::IterMut<'a, T>),
+}
 
-    fn sub(self, other: Tensor<T, B>) -> Self::Output {
-        match self.sub_checked(other) {
-            Ok(res) => res,
-            Err(err) => panic!("{}", err),
+/// Iterator type over mutable references to the indices of a given [`Tensor`].
+///
+/// The iterator item type is `&mut T`.
+pub struct IndicesMut<'a, T>(IndicesMutData<'a, T>);
+
+impl<'a, T> Iterator for IndicesMut<'a, T> {
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.0 {
+            IndicesMutData::Scalar => None,
+            IndicesMutData::Tensor(iter) => iter.next(),
         }
     }
 }

@@ -1,10 +1,9 @@
 //! Simple thread pool for processing batches of tensor contractions.
 
-use std::{ ops::Mul, thread };
+use std::thread;
 use crossbeam::channel;
-use ndarray as nd;
 use thiserror::Error;
-use crate::tensor::{ Tensor, Idx };
+use crate::tensor::{ Tensor, Elem, Idx };
 
 #[derive(Debug, Error)]
 pub enum PoolError {
@@ -54,7 +53,7 @@ pub struct ContractorPool<T, A> {
 impl<T, A> ContractorPool<T, A>
 where
     T: Idx + Send + 'static,
-    A: Mul<A, Output = A> + nd::LinalgScalar + Send + 'static,
+    A: Elem + Send + 'static,
 {
     /// Create a new thread pool of `nthreads` threads.
     pub fn new(nthreads: usize) -> Self {

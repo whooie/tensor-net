@@ -37,18 +37,6 @@ impl Idx for Q {
     fn label(&self) -> String { format!("q:{}", self.0) }
 }
 
-impl crate::tensor2::Idx for Q {
-    fn dim(&self) -> usize { 2 }
-
-    fn label(&self) -> String { format!("q:{}", self.0) }
-}
-
-impl crate::tensor3::Idx for Q {
-    fn dim(&self) -> usize { 2 }
-
-    fn label(&self) -> String { format!("q:{}", self.0) }
-}
-
 /// The result of a measurement.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Outcome {

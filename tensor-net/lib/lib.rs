@@ -7,11 +7,7 @@ use num_complex::{ ComplexFloat, Complex };
 use num_traits::{ Float, Zero };
 
 pub mod tensor;
-pub mod tensor2;
-pub mod tensor3;
 pub mod network;
-pub mod network2;
-pub mod network3;
 pub mod pool;
 
 pub mod mps;

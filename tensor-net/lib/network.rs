@@ -9,8 +9,7 @@
 //!
 //! ```
 //! use tensor_net::{
-//!     network::Network,
-//!     pool::ContractorPool,
+//!     network::{ Network, Pool },
 //!     tensor::{ Idx, Tensor },
 //! };
 //!
@@ -30,6 +29,12 @@
 //!     }
 //!
 //!     fn label(&self) -> String { format!("{:?}", self) }
+//! }
+//!
+//! impl std::fmt::Display for Index {
+//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//!         write!(f, "{self:?}")
+//!     }
 //! }
 //!
 //! let a = Tensor::new([Index::A, Index::B], |_| 1.0).unwrap();
@@ -58,7 +63,7 @@
 //! let net = Network::from_nodes([a, b, c, d]).unwrap();
 //!
 //! // contraction can be performed in parallel using a thread pool
-//! let pool = ContractorPool::new_cpus(); // #threads == #cpu cores
+//! let pool = Pool::new_cpus(); // #threads == #cpu cores
 //!
 //! let res = net.contract_par(&pool).unwrap();
 //! println!("{}", res);
@@ -67,15 +72,13 @@
 
 use std::{
     hash::Hash,
-    ops::{ Deref, DerefMut, Mul },
+    ops::{ Deref, DerefMut },
+    thread,
 };
-use ndarray as nd;
+use crossbeam::channel;
 use rustc_hash::{ FxHashMap as HashMap };
 use thiserror::Error;
-use crate::{
-    pool::{ ContractorPool, PoolError },
-    tensor::{ self, Tensor, Idx },
-};
+use crate::tensor::{ self, Tensor, Idx, Elem, };
 
 #[derive(Error, Debug)]
 pub enum NetworkError {
@@ -104,9 +107,9 @@ pub enum NetworkError {
     #[error("tensor error: {0}")]
     TensorError(#[from] tensor::TensorError),
 
-    /// Returned by anything involving a [`ContractorPool`].
+    /// Returned by anything involving a [`Pool`].
     #[error("contractor pool error: {0}")]
-    ContractorPoolError(#[from] PoolError),
+    PoolError(#[from] PoolError),
 }
 use NetworkError::*;
 pub type NetworkResult<T> = Result<T, NetworkError>;
@@ -219,7 +222,9 @@ pub struct Network<T, A> {
 }
 
 impl<T, A> Network<T, A>
-where T: Idx
+where
+    T: Idx,
+    A: Elem,
 {
     /// Create a new, empty network.
     pub fn new() -> Self {
@@ -474,13 +479,15 @@ where T: Idx
 impl<T, A> Network<T, A>
 where
     T: Idx,
-    A: Mul<A, Output = A> + nd::LinalgScalar,
+    A: Elem,
 {
     /// Simple greedy algorithm to find the next contraction step, optimized
     /// over only a single contraction.
     fn find_contraction(&self) -> Option<(Id, Id)> {
         fn costf<T, A>(net: &Network<T, A>, id_a: &Id, id_b: &Id) -> usize
-        where T: Idx
+        where
+            T: Idx,
+            A: Elem,
         {
             let a = net.get(id_a).unwrap();
             let b = net.get(id_b).unwrap();
@@ -582,9 +589,9 @@ where
 impl<T, A> Network<T, A>
 where
     T: Idx + Send + 'static,
-    A: Mul<A, Output = A> + nd::LinalgScalar + Send + 'static,
+    A: Elem + Send + Sync,
 {
-    fn do_contract_par(&mut self, pool: &ContractorPool<T, A>)
+    fn do_contract_par(&mut self, pool: &Pool<T, A>)
         -> NetworkResult<&mut Self>
     {
         let mut contractions: Vec<(Tensor<T, A>, Tensor<T, A>)>
@@ -604,7 +611,7 @@ where
     }
 
     /// Like [`Self::contract`], but using a thread pool.
-    pub fn contract_par(mut self, pool: &ContractorPool<T, A>)
+    pub fn contract_par(mut self, pool: &Pool<T, A>)
         -> NetworkResult<Tensor<T, A>>
     {
         self.do_contract_par(pool)?;
@@ -619,7 +626,7 @@ where
     }
 
     /// Like [`Self::contract_remove`], but using a thread pool.
-    pub fn contract_remove_par(&mut self, pool: &ContractorPool<T, A>)
+    pub fn contract_remove_par(&mut self, pool: &Pool<T, A>)
         -> NetworkResult<Tensor<T, A>>
     {
         self.do_contract_par(pool)?;
@@ -638,7 +645,7 @@ where
     }
 
     /// Like [`Self::contract_network`], but using a thread pool.
-    pub fn contract_network_par(&mut self, pool: &ContractorPool<T, A>)
+    pub fn contract_network_par(&mut self, pool: &Pool<T, A>)
         -> NetworkResult<&mut Self>
     {
         self.do_contract_par(pool)?;
@@ -760,6 +767,137 @@ impl<'a, T, A> Iterator for Neighbors<'a, T, A> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next().map(|id| (*id, &self.network.nodes[id]))
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum PoolError {
+    #[error("failed to enqueue contractions: dead thread")]
+    DeadThread,
+
+    #[error("failed to enqueue contractions: closed sender channel")]
+    ClosedSenderChannel,
+
+    #[error("failed to receive contraction result: receiver error: {0}")]
+    ClosedReceiverChannel(channel::RecvError),
+
+    #[error("encountered receiver error from within a thread: receiver error: {0}")]
+    WorkerReceiverError(channel::RecvError),
+}
+pub type PoolResult<T> = Result<T, PoolError>;
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug)]
+enum ToWorker<T, A> {
+    Stop,
+    Work(Tensor<T, A>, Tensor<T, A>),
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug)]
+enum FromWorker<T, A> {
+    RecvError(channel::RecvError),
+    Output(Tensor<T, A>),
+}
+
+/// A simple thread pool to contract pairs of tensors in parallel.
+///
+/// Workload between threads is automatically balanced by means of a
+/// single-producer, multiple-consumer channel. Contracted pairs are returned in
+/// the order in which the contraction operations finished. The pool as a whole
+/// is meant to be reused between batches of contractions, and is **not**
+/// thread-safe.
+#[derive(Debug)]
+pub struct Pool<T, A> {
+    threads: Vec<thread::JoinHandle<()>>,
+    workers_in: channel::Sender<ToWorker<T, A>>,
+    workers_out: channel::Receiver<FromWorker<T, A>>,
+}
+
+impl<T, A> Pool<T, A>
+where
+    T: Idx + Send + 'static,
+    A: Elem + Send + Sync,
+{
+    /// Create a new thread pool of `nthreads` threads.
+    pub fn new(nthreads: usize) -> Self {
+        let (tx_in, rx_in) = channel::unbounded();
+        let (tx_out, rx_out) = channel::unbounded();
+        let mut threads = Vec::with_capacity(nthreads);
+        for _ in 0..nthreads {
+            let worker_receiver = rx_in.clone();
+            let worker_sender = tx_out.clone();
+            let th = thread::spawn(move || loop {
+                match worker_receiver.recv() {
+                    Ok(ToWorker::Stop) => { break; },
+                    Ok(ToWorker::Work(a, b)) => {
+                        let c = a.multiply(b);
+                        match worker_sender.send(FromWorker::Output(c)) {
+                            Ok(()) => { continue; },
+                            Err(err) => { panic!("sender error: {err}"); },
+                        }
+                    },
+                    Err(err) => {
+                        match worker_sender.send(FromWorker::RecvError(err)) {
+                            Ok(()) => { panic!("receiver error"); },
+                            Err(_) => { panic!("sender error: {err}"); },
+                        }
+                    },
+                }
+            });
+            threads.push(th);
+        }
+        Self { threads, workers_in: tx_in, workers_out: rx_out }
+    }
+
+    /// Create a new thread pool with the number of threads equal to the number
+    /// of logical CPU cores available in the current system.
+    pub fn new_cpus() -> Self { Self::new(num_cpus::get()) }
+
+    /// Create a new thread pool with the number of threads equal to the number
+    /// of physical CPU cores available in the current system.
+    pub fn new_physical() -> Self { Self::new(num_cpus::get_physical()) }
+
+    /// Enqueue a batch of contractions to be distributed across all threads.
+    ///
+    /// This method will block until all enqueued contractions have been
+    /// completed.
+    pub fn do_contractions<I>(&self, pairs: I)
+        -> PoolResult<Vec<Tensor<T, A>>>
+    where I: IntoIterator<Item = (Tensor<T, A>, Tensor<T, A>)>
+    {
+        if self.threads.iter().any(|th| th.is_finished()) {
+            return Err(PoolError::DeadThread);
+        }
+        let mut count: usize = 0;
+        for (t_a, t_b) in pairs.into_iter() {
+            match self.workers_in.send(ToWorker::Work(t_a, t_b)) {
+                Ok(()) => { count += 1; },
+                Err(_) => { return Err(PoolError::ClosedSenderChannel); },
+            }
+        }
+        let mut output = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.workers_out.recv() {
+                Ok(FromWorker::Output(t_c)) => { output.push(t_c); },
+                Ok(FromWorker::RecvError(err)) => {
+                    return Err(PoolError::WorkerReceiverError(err));
+                }
+                Err(err) => {
+                    return Err(PoolError::ClosedReceiverChannel(err));
+                },
+            }
+        }
+        Ok(output)
+    }
+}
+
+impl<T, A> Drop for Pool<T, A> {
+    fn drop(&mut self) {
+        (0..self.threads.len())
+            .for_each(|_| { self.workers_in.send(ToWorker::Stop).ok(); });
+        self.threads.drain(..)
+            .for_each(|th| { th.join().ok(); });
     }
 }
 
