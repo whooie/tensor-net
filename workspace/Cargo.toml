@@ -9,6 +9,7 @@ edition = "2021"
 # thiserror = "*"
 itertools = "0.13.0"
 ndarray = { version = "0.15.6", features = [ "default", "rayon",] }
+rand = "0.8.5"
 rayon = "1.10.0"
 tensor-net = { path = "../tensor-net", version = "*" }
 
@@ -32,6 +33,10 @@ name = "phase_transition"
 [[bin]]
 path = "src/state.rs"
 name = "state"
+
+[[bin]]
+path = "src/fixed_circuit.rs"
+name = "fixed_circuit"
 
 [profile.release]
 lto = true

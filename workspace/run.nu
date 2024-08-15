@@ -33,28 +33,28 @@ def "main exec" [
     $targets | each {|t| print $"  ($t)" }
     return
   }
-  let exec_out = null
-  if not $scripts_only {
-    cargo run --release --bin $target
-  }
-  # let exec_out = if not $scripts_only {
-  #   if $pass_stdout {
-  #     try {
-  #       cargo run --release --bin $target
-  #       | complete
-  #       | get stdout
-  #       | split row "\n"
-  #       | where ($it | str length) > 0
-  #     } catch {
-  #       null
-  #     }
-  #   } else {
-  #     cargo run --release --bin $target
-  #     null
-  #   }
-  # } else {
-  #   null
+  # let exec_out = null
+  # if not $scripts_only {
+  #   cargo run --release --bin $target
   # }
+  let exec_out = if not $scripts_only {
+    if $pass_stdout {
+      try {
+        cargo run --release --bin $target
+        | complete
+        | get stdout
+        | split row "\n"
+        | where ($it | str length) > 0
+      } catch {
+        null
+      }
+    } else {
+      cargo run --release --bin $target
+      null
+    }
+  } else {
+    null
+  }
 
   if not $compute_only {
     ls $"src/($target)"

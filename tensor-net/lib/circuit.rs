@@ -549,8 +549,12 @@ impl MPSCircuit {
 
     /// Run the MIPT procedure for a general config without recording any
     /// time-evolution data.
-    pub fn run(&mut self, mut config: CircuitConfig) {
-        self.do_run(&mut config, None, None, /* None */);
+    pub fn run(
+        &mut self,
+        mut config: CircuitConfig,
+        meas: Option<&mut MeasRecord>,
+    ) {
+        self.do_run(&mut config, meas, None, /* None */);
     }
 
     fn do_run_fixed(
@@ -629,8 +633,12 @@ impl MPSCircuit {
 
     /// Run the MIPT procedure for a completely fixed circuit without recording
     /// any time-evolution data.
-    pub fn run_fixed(&mut self, circ: &Circuit) {
-        self.do_run_fixed(circ, None, None);
+    pub fn run_fixed(
+        &mut self,
+        circ: &Circuit,
+        meas: Option<&mut MeasRecord>,
+    ) {
+        self.do_run_fixed(circ, meas, None);
     }
 
 }
@@ -999,6 +1007,12 @@ pub struct Circuit {
 }
 
 impl Circuit {
+    /// Return the number of qubits in the circuit.
+    pub fn nqubits(&self) -> usize { self.n }
+
+    /// Return the depth of the circuit.
+    pub fn depth(&self) -> usize { self.ops.len() }
+
     fn sample_simple<R>(
         n: usize,
         offs: bool,

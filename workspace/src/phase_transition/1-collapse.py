@@ -100,7 +100,7 @@ class Scan:
 
 def do_scan(data: Data, npoints: int=100) -> Scan:
     pc = np.linspace(data.p_meas.min(), data.p_meas.max(), npoints)
-    nu = np.linspace(0.2, 2.0, npoints)
+    nu = np.linspace(0.1, 4.0, npoints)
 
     coords = np.array([[pci, nuj] for pci in pc for nuj in nu])
     costfs = np.array([costf(data, *pc_nu) for pc_nu in coords])
@@ -136,7 +136,7 @@ class Fit:
 def do_collapse_fit(data: Data, pc0: float, nu0: float) -> Fit:
     params = lmfit.Parameters()
     params.add("pc", value=pc0, min=data.p_meas.min(), max=data.p_meas.max())
-    params.add("nu", value=nu0, min=0.2, max=2.0)
+    params.add("nu", value=nu0, min=0.1, max=5.0)
     fit = lmfit.minimize(
         residuals, params, args=(data.p_meas, data.size, data.s_mean))
     pc = ExpVal(fit.params["pc"].value, fit.params["pc"].stderr)
@@ -193,14 +193,15 @@ def main():
     # infile = outdir.joinpath("phase_transition_h-s-cx-open_every-prob_small.npz")
     # infile = outdir.joinpath("phase_transition_h-s-cz-open_every-prob_small.npz")
     data = Data.from_file(infile)
-    print("scan")
-    scan = do_scan(data)
-    print(f"pc0 = {scan.pc}")
-    print(f"nu0 = {scan.nu}")
-    print(f"cost = {scan.costf}")
-    print()
+    # print("scan")
+    # scan = do_scan(data, npoints=200)
+    # print(f"pc0 = {scan.pc}")
+    # print(f"nu0 = {scan.nu}")
+    # print(f"cost = {scan.costf}")
+    # print()
     print("fit")
-    fit = do_collapse_fit(data, scan.pc, scan.nu)
+    # fit = do_collapse_fit(data, scan.pc, scan.nu)
+    fit = do_collapse_fit(data, 0.26, 1.4)
     print(f"pc = {fit.pc.value_str()}")
     print(f"nu = {fit.nu.value_str()}")
     print(f"cost = {fit.costf:.3e}")
