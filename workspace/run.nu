@@ -27,7 +27,7 @@ def "main exec" [
     error make { msg: $"invalid target ($target)" }
   }
 
-  if $clear { clearall }
+  if $clear { clearall; echo (date now) }
   if $list or ($target == null) {
     echo "Available targets:"
     $targets | each {|t| print $"  ($t)" }
