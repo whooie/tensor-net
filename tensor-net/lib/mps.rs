@@ -174,6 +174,7 @@ where
         + ComplexFloatExt
         + Scalar<Real = Self::Re>
         + Lapack,
+    Self::Re: std::fmt::Debug,
 {
     /// Type for associated real values.
     type Re: Float + NumAssign;
@@ -239,7 +240,14 @@ where A: ComplexLinalgScalar
     s.map_inplace(|sj| { *sj /= norm; });
     let rank
         = match trunc {
-            Some(BondDim::Const(r)) => r.max(1).min(s.len()),
+            Some(BondDim::Const(r)) => {
+                let eps = A::Re::epsilon();
+                let n
+                    = s.iter()
+                    .take_while(|sj| sj.is_normal() && **sj > eps)
+                    .count();
+                r.max(1).min(n)
+            },
             Some(BondDim::Cutoff(eps)) => {
                 let eps = eps.abs();
                 s.iter()
@@ -951,6 +959,7 @@ where
         self.data[k] = gk_new;
         self.svals[k] = s;
         self.data[k + 1] = gkp1_new;
+        self.local_renormalize(k);
     }
 
     // apply local refactors to each bond in the MPS, going left to right
@@ -971,6 +980,24 @@ where
     fn refactor_sweep(&mut self) {
         for k in  0..self.n - 1        { self.local_refactor(k); }
         for k in (0..self.n - 2).rev() { self.local_refactor(k); }
+    }
+
+    // apply two bidirectional sweeps of the MPS starting at a particular site,
+    // avoiding double-refactors at the edges
+    // assumes `c` is in bounds
+    #[inline]
+    fn refactor_sweep_centered(&mut self, c: usize) {
+        if c == 0 {
+            for k in  0..self.n - 1        { self.local_refactor(k); }
+            for k in (0..self.n - 2).rev() { self.local_refactor(k); }
+        } else if c == self.n - 1 {
+            for k in (0..self.n - 2).rev() { self.local_refactor(k); }
+            for k in  0..self.n - 1        { self.local_refactor(k); }
+        } else {
+            for k in  c..self.n - 1        { self.local_refactor(k); }
+            for k in (0..self.n - 2).rev() { self.local_refactor(k); }
+            for k in  0..c                 { self.local_refactor(k); }
+        }
     }
 }
 
@@ -1078,6 +1105,50 @@ where
                     + acc
                 });
             Ok(ev)
+        }
+    }
+
+    // calculates the probability of the `k`-particle being in the `p`-th state
+    // assume `k` and `p` are in bounds
+    #[inline]
+    fn local_prob(&self, k: usize, p: usize) -> A {
+        if k == 0 {
+            let gk0p_ = &self.data[k].slice(nd::s![0, p, ..]);
+            let lk = &self.svals[k];
+            nd::Zip::from(gk0p_)
+                .and(lk)
+                .fold(A::zero(), |acc, gk0pw, lkw| {
+                    gk0pw.conj() * *gk0pw
+                        * A::from_re(lkw.powi(2))
+                    + acc
+                })
+        } else if k == self.n - 1 {
+            let lkm1 = &self.svals[k - 1];
+            let gk_p0 = &self.data[k].slice(nd::s![.., p, 0]);
+            nd::Zip::from(gk_p0)
+                .and(lkm1)
+                .fold(A::zero(), |acc, gkvp0, lkm1v| {
+                    gkvp0.conj() * *gkvp0
+                        * A::from_re(lkm1v.powi(2))
+                    + acc
+                })
+        } else {
+            let lkm1 = &self.svals[k - 1];
+            let gk_p_ = &self.data[k].slice(nd::s![.., p, ..]);
+            let lk = &self.svals[k];
+            nd::Zip::from(gk_p_.outer_iter())
+                .and(lkm1)
+                .fold(A::zero(), |acc, gkvp_, lkm1v| {
+                    nd::Zip::from(gkvp_)
+                        .and(lk)
+                        .fold(A::zero(), |acc, gkvpw, lkw| {
+                            gkvpw.conj() * *gkvpw
+                                * A::from_re(lkw.powi(2))
+                            + acc
+                        })
+                        * A::from_re(lkm1v.powi(2))
+                    + acc
+                })
         }
     }
 
@@ -1291,8 +1362,8 @@ where
         self.data[k] = gk_new;
         self.svals[k] = s;
         self.data[k + 1] = gkp1_new;
-        // self.local_renormalize(k);
-        // self.local_renormalize(k + 1);
+        self.local_renormalize(k);
+        self.local_renormalize(k + 1);
         Ok(self)
     }
 }
@@ -1423,8 +1494,21 @@ where
         self.project(k, p, renorm);
         // self.refactor_lrsweep();
         self.refactor_sweep();
+        // self.refactor_sweep_centered(k);
         // self.refactor();
         Some(p)
+    }
+
+    /// Perform a projective measurement on the `k`-th particle, post-selected
+    /// to a particular outcome.
+    ///
+    /// If `k` is out of bounds or `p` is an invalid quantum number, do nothing.
+    #[inline]
+    pub fn measure_postsel(&mut self, k: usize, p: usize) {
+        if k >= self.n || p >= self.outs[k].dim() { return; }
+        let renorm = ComplexFloat::sqrt(self.local_prob(k, p));
+        self.project(k, p, renorm);
+        self.refactor_sweep();
     }
 
     // /// Perform a batched series of projective measurements on selected
@@ -1907,6 +1991,16 @@ impl MPS<Q, C64> {
                 .unwrap();
         }
         res
+    }
+
+    /// Like [`Self::measure_postsel`], but deterministically reset the state to
+    /// ∣0⟩ after measurement.
+    pub fn measure_postsel_reset(&mut self, k: usize, p: usize) {
+        self.measure_postsel(k, p);
+        if p != 0 {
+            self.apply_unitary1(k, Lazy::force(&gate::XMAT))
+                .unwrap();
+        }
     }
 }
 

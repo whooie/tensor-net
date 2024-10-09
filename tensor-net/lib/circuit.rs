@@ -588,21 +588,35 @@ impl MPSCircuit {
                 }
             }
 
-            if reset {
-                for &k in layer.meas.iter() {
-                    if let Some(outk) = outcomes.get_mut(k) {
-                        *outk = self.state.measure_reset(k, &mut self.rng)
-                            .map(Outcome::from);
-                    }
-                }
-            } else {
-                for &k in layer.meas.iter() {
-                    if let Some(outk) = outcomes.get_mut(k) {
-                        *outk = self.state.measure(k, &mut self.rng)
-                            .map(Outcome::from);
+            for &m in layer.meas.iter() {
+                match m {
+                    Measurement::Rand(k) => {
+                        if let Some(outk) = outcomes.get_mut(k) {
+                            if reset {
+                                *outk
+                                    = self.state.measure_reset(k, &mut self.rng)
+                                    .map(Outcome::from);
+                            } else {
+                                *outk
+                                    = self.state.measure(k, &mut self.rng)
+                                    .map(Outcome::from);
+                            }
+                        }
+                    },
+                    Measurement::Proj(k, out) => {
+                        if let Some(outk) = outcomes.get_mut(k) {
+                            let p = out as usize;
+                            if reset {
+                                self.state.measure_postsel_reset(k, p);
+                            } else {
+                                self.state.measure_postsel(k, p);
+                            }
+                            *outk = Some(out);
+                        }
                     }
                 }
             }
+
             if let Some(rcd) = meas.as_mut() {
                 let mut tmp: MeasLayer = vec![None; self.n];
                 std::mem::swap(&mut tmp, &mut outcomes);
@@ -977,13 +991,36 @@ impl From<ExactGate> for Unitary {
     fn from(gate: ExactGate) -> Self { Self::ExactGate(gate) }
 }
 
+/// A measurement operation in a [`Circuit`].
+///
+/// Measurements are either naive (fully randomized) or projectors with
+/// pre-determined outcomes.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Measurement {
+    /// A fully randomized measurement on a particular qubit.
+    Rand(usize),
+    /// A measurement that is post-selected to a particular outcome.
+    Proj(usize, Outcome),
+}
+
+impl Measurement {
+    /// Return the qubit index of the measurement.
+    pub fn idx(&self) -> usize {
+        match self {
+            Self::Rand(k) => *k,
+            Self::Proj(k, _) => *k,
+        }
+    }
+}
+
 /// The operations in a single layer of a [`Circuit`].
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct OpLayer {
     /// All unitary operations.
     pub unis: Vec<Unitary>,
     /// The indices of the qubits to be measured.
-    pub meas: Vec<usize>,
+    // pub meas: Vec<usize>,
+    pub meas: Vec<Measurement>,
 }
 
 #[derive(Debug, Error)]
@@ -1012,6 +1049,16 @@ impl Circuit {
 
     /// Return the depth of the circuit.
     pub fn depth(&self) -> usize { self.ops.len() }
+
+    /// Return a reference to a particular layer in the circuit.
+    pub fn get_layer(&self, k: usize) -> Option<&OpLayer> {
+        self.ops.get(k)
+    }
+
+    /// Return a mutable reference to a particular layer in the circuit.
+    pub fn get_layer_mut(&mut self, k: usize) -> Option<&mut OpLayer> {
+        self.ops.get_mut(k)
+    }
 
     fn sample_simple<R>(
         n: usize,
@@ -1128,7 +1175,7 @@ impl Circuit {
                         Pred::Func(f) => f(*k),
                     }
                 })
-                .for_each(|k| { ops.meas.push(k); });
+                .for_each(|k| { ops.meas.push(Measurement::Rand(k)); });
         }
 
         let MeasureConfig { layer, prob, reset: _ } = config;
@@ -1239,6 +1286,51 @@ impl Circuit {
             ops.push(std::mem::take(&mut layer));
         }
         Ok(Self { n, ops, reset: meas_conf.reset, entropy: entropy_conf })
+    }
+
+    /// Increase the effective measurement probability to a new value
+    /// "conservatively" by sampling new ([randomized][Measurement::Rand])
+    /// measurement locations uniformly, *only* from positions that do not
+    /// already have a measurement.
+    ///
+    /// This sorts the measurement indices in each layer and does not respect
+    /// any non-probabilistic measurement patterns. Does nothing if `p_new` is
+    /// less than the current effective value.
+    pub fn upsample_measurements<R>(&mut self, p_new: f64, rng: &mut R)
+    where R: Rng + ?Sized
+    {
+        let n: f64 = self.n as f64;
+        let p0: f64
+            = self.ops.iter()
+            .enumerate()
+            .map(|(d, layer)| (d as f64, layer.meas.len() as f64))
+            .fold(0.0, |acc, (d, m)| (acc * d * n + m) / ((d + 1.0) * n));
+        if p_new <= p0 { return; }
+        let p_sample = (p_new - p0) / (1.0 - p0);
+        let mut new_pos: Vec<Measurement> = Vec::with_capacity(self.n);
+        for OpLayer { unis: _, meas } in self.ops.iter_mut() {
+            if meas.is_empty() {
+                (0..self.n).filter(|_| rng.gen::<f64>() < p_sample)
+                    .for_each(|k| { meas.push(Measurement::Rand(k)); });
+            } else {
+                meas.sort_by_key(Measurement::idx);
+                let mut k0: usize = 0;
+                meas.iter().copied()
+                    .flat_map(|m| {
+                        let k = m.idx();
+                        let start = k0;
+                        k0 = k + 1;
+                        start..k
+                    })
+                    .filter(|_| rng.gen::<f64>() < p_sample)
+                    .for_each(|k| { new_pos.push(Measurement::Rand(k)); });
+                (k0..self.n)
+                    .filter(|_| rng.gen::<f64>() < p_sample)
+                    .for_each(|k| { new_pos.push(Measurement::Rand(k)); });
+                meas.append(&mut new_pos);
+                meas.sort_by_key(Measurement::idx);
+            }
+        }
     }
 }
 

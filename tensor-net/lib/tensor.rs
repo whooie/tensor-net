@@ -192,7 +192,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// representations because there are runtime-mutable degrees of freedom.
 ///
 /// Ultimately, static representations should be preferred where possible.
-pub trait Idx: Clone + Eq + Hash {
+pub trait Idx: Clone + Eq + Hash + std::fmt::Debug {
     /// Return the number of values the index can take.
     ///
     /// This value must never be zero.
