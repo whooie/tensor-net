@@ -220,8 +220,7 @@ where
     ///
     /// `trunc` defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
     /// `A::Real`.
-    fn local_decomp(self, trunc: Option<BondDim<A::Re>>)
-        -> Schmidt<A>;
+    fn local_decomp(self, trunc: Option<BondDim<A::Re>>) -> Schmidt<A>;
 }
 
 fn process_svd<A>(
@@ -294,10 +293,6 @@ where A: ComplexLinalgScalar
 }
 
 /// A matrix product (pure) state.
-///
-/// This is a specific case of a [`Network<T, A>`][crate::network::Network],
-/// where tensors are arranged in a 1D chain with open boundaries, and have one
-/// physical index each.
 ///
 /// The MPS is maintained in a so-called "canonical" factorization based on the
 /// Schmidt decomposition. The Schmidt values are readily available at any given
@@ -428,11 +423,9 @@ impl<T, A> MPS<T, A>
 where A: ComplexLinalgScalar
 {
     /// Return the number of particles.
-    #[inline]
     pub fn n(&self) -> usize { self.n }
 
     /// Return a reference to all physical indices.
-    #[inline]
     pub fn indices(&self) -> &Vec<T> { &self.outs }
 }
 
@@ -587,8 +580,7 @@ where
     }
 }
 
-#[inline]
-fn do_contract_local_2<A>(
+pub(crate) fn do_contract_local_2<A>(
     ls: Option<&nd::Array1<A::Re>>,
     l: &nd::Array3<A>,
     s: &nd::Array1<A::Re>,
@@ -628,8 +620,7 @@ where A: ComplexLinalgScalar
     l.dot(&r)
 }
 
-#[inline]
-fn do_contract_local_3<A>(
+pub(crate) fn do_contract_local_3<A>(
     ls: Option<&nd::Array1<A::Re>>,
     l: &nd::Array3<A>,
     s: &nd::Array1<A::Re>,
@@ -645,8 +636,7 @@ where A: ComplexLinalgScalar
         .unwrap()
 }
 
-#[inline]
-fn do_contract_local_4<A>(
+pub(crate) fn do_contract_local_4<A>(
     ls: Option<&nd::Array1<A::Re>>,
     l: &nd::Array3<A>,
     s: &nd::Array1<A::Re>,
@@ -697,7 +687,6 @@ where A: ComplexLinalgScalar
     // the result has axis signature
     //      q :: { u<>sl, sr<>w }
     // (where `<>` denotes fusion)
-    #[inline]
     fn do_contract2(
         l: &nd::Array3<A>,
         s: &nd::Array1<A::Re>,
@@ -732,7 +721,6 @@ where A: ComplexLinalgScalar
     // the result has axis signature
     //      q :: { u, sl<>sr, w }
     // (where `<>` denotes fusion)
-    #[inline]
     fn do_contract3(
         l: &nd::Array3<A>,
         s: &nd::Array1<A::Re>,
@@ -754,7 +742,6 @@ where A: ComplexLinalgScalar
     //      r :: { u, sr, w }
     // the result has axis signature
     //      q :: { u, sl, sr, w }
-    #[inline]
     fn do_contract4(
         l: &nd::Array3<A>,
         s: &nd::Array1<A::Re>,
@@ -804,7 +791,6 @@ where A: ComplexLinalgScalar
     // (where `<>` denotes fusion)
     //
     // assumes `k` and `k + 1` are in bounds
-    #[inline]
     fn contract_local2(&self, k: usize) -> nd::Array2<A> {
         let shk = self.data[k].dim();
         let shkp1 = self.data[k + 1].dim();
@@ -840,7 +826,6 @@ where A: ComplexLinalgScalar
     // (where `<>` denotes fusion)
     //
     // assumes `k` and `k + 1` are in bounds
-    #[inline]
     fn contract_local3(&self, k: usize) -> nd::Array3<A> {
         let shk = self.data[k].dim();
         let shkp1 = self.data[k + 1].dim();
@@ -859,7 +844,6 @@ where A: ComplexLinalgScalar
     //      q :: { u, sl, sr, w }
     //
     // assumes `k` and `k + 1` are in bounds
-    #[inline]
     fn contract_local4(&self, k: usize) -> nd::Array4<A> {
         let shk = self.data[k].dim();
         let shkp1 = self.data[k + 1].dim();
@@ -869,7 +853,6 @@ where A: ComplexLinalgScalar
     }
 
     /// Return the contraction of `self` into a flat state vector.
-    #[inline]
     pub fn contract(&self) -> nd::Array1<A> {
         let res = Self::do_contract_multi(&self.data, &self.svals);
         let statelen = res.shape()[1];
@@ -877,7 +860,6 @@ where A: ComplexLinalgScalar
     }
 
     /// Contract `self` into a flat state vector and all physical indices.
-    #[inline]
     pub fn into_contract(self) -> (Vec<T>, nd::Array1<A>) {
         let state = self.contract();
         (self.outs, state)
@@ -890,7 +872,6 @@ where
     A: ComplexLinalgScalar
 {
     /// Return the contraction of `self` into a rank-N tensor.
-    #[inline]
     pub fn contract_nd(&self) -> nd::ArrayD<A> {
         let state = self.contract();
         let shape: Vec<usize> = self.outs.iter().map(Idx::dim).collect();
@@ -898,7 +879,6 @@ where
     }
 
     /// Contract `self` into an rank-N tensor and all physical indices.
-    #[inline]
     pub fn into_contract_nd(self) -> (Vec<T>, nd::ArrayD<A>) {
         let (indices, state) = self.into_contract();
         let shape: Vec<usize> = indices.iter().map(Idx::dim).collect();
@@ -914,7 +894,6 @@ where
 {
     // perform a contraction of the total state and repeat the initial
     // factorization process to re-construct all Γ tensors and singular values
-    #[inline]
     fn refactor(&mut self) {
         let q = self.contract();
         let (data_new, svals_new) = Self::factorize(&self.outs, q, self.trunc);
@@ -926,7 +905,6 @@ where
     // values if applicable) and refactor to re-construct for only those sites
     //
     // assumes `k` and `k + 1` are in bounds
-    #[inline]
     fn local_refactor(&mut self, k: usize) {
         let shk = self.data[k].dim();
         let shkp1 = self.data[k + 1].dim();
@@ -963,20 +941,17 @@ where
     }
 
     // apply local refactors to each bond in the MPS, going left to right
-    #[inline]
     fn refactor_lrsweep(&mut self) {
         for k in 0..self.n - 1 { self.local_refactor(k); }
     }
 
     // apply local refactors to each bond in the MPS, going right to left
-    #[inline]
     fn refactor_rlsweep(&mut self) {
         for k in (0..self.n - 1).rev() { self.local_refactor(k); }
     }
 
     // apply a full bidirectional sweep of the MPS, avoiding the double-refactor
     // of the last bond
-    #[inline]
     fn refactor_sweep(&mut self) {
         for k in  0..self.n - 1        { self.local_refactor(k); }
         for k in (0..self.n - 2).rev() { self.local_refactor(k); }
@@ -1154,7 +1129,6 @@ where
 
     // calculates the norm of the subspace belonging to particle `k`
     // assume `k` is in bounds
-    #[inline]
     fn local_norm(&self, k: usize) -> A {
         if k == 0 {
             let gk0__ = &self.data[k].slice(nd::s![0, .., ..]);
@@ -1214,7 +1188,6 @@ where
 
     // renormalizes the Γ tensor belonging to particle `k`
     // assumes `k` is in bounds
-    #[inline]
     fn local_renormalize(&mut self, k: usize) {
         let norm = self.local_norm(k);
         self.data[k].map_inplace(|gkvsu| { *gkvsu /= norm; });
@@ -1224,11 +1197,42 @@ where
 impl<T, A> MPS<T, A>
 where A: ComplexLinalgScalar
 {
+    /// Return the current bond dimension truncation setting.
+    pub fn get_trunc(&self) -> Option<BondDim<A::Re>> { self.trunc }
+
+    /// Set a new bond dimension truncation setting.
+    pub fn set_trunc(&mut self, trunc: Option<BondDim<A::Re>>) {
+        self.trunc = trunc;
+    }
+
+    /// Return the maximum bond dimension in the MPS.
+    ///
+    /// This function will always return `Some` if `self` has at least two
+    /// particles.
+    pub fn max_bond_dim(&self) -> Option<usize> {
+        self.svals.iter().map(|s| s.len()).max()
+    }
+
+    /// Return the index of the bond with largest dimension in the MPS.
+    ///
+    /// This function will always return `Some` if `self` has at least two
+    /// particles.
+    pub fn max_bond_dim_idx(&self) -> Option<usize> {
+        self.svals.iter().enumerate()
+            .max_by_key(|(_, s)| s.len())
+            .map(|(k, _)| k)
+    }
+
+    /// Return the dimension of the bond between the `k`-th and `k + 1`-th
+    /// particles.
+    pub fn bond_dim(&self, k: usize) -> Option<usize> {
+        self.svals.get(k).map(|s| s.len())
+    }
+
     /// Compute the Von Neumann entropy for a bipartition placed on the `b`-th
     /// bond.
     ///
     /// Returns `None` if `b` is out of bounds.
-    #[inline]
     pub fn entropy_vn(&self, b: usize) -> Option<A::Re> {
         self.svals.get(b)
             .map(|s| {
@@ -1246,7 +1250,6 @@ where A: ComplexLinalgScalar
     ///
     /// Returns the Von Neumann entropy for `a == 1` and `None` if `b` is out of
     /// bounds.
-    #[inline]
     pub fn entropy_ry_schmidt(&self, a: A::Re, b: usize) -> Option<A::Re> {
         let one = A::Re::one();
         if a == one {
@@ -1277,7 +1280,6 @@ where
     ///
     /// Fails if `op` is not square with a dimension equal to that of the `k`-th
     /// physical index.
-    #[inline]
     pub fn apply_unitary1(&mut self, k: usize, op: &nd::Array2<A>)
         -> MPSResult<&mut Self>
     {
@@ -1311,7 +1313,6 @@ where
     ///
     /// Fails if `op` is not square with a size equal to the product of the
     /// dimensions of the `k`-th and `k + 1`-th physical indices.
-    #[inline]
     pub fn apply_unitary2(&mut self, k: usize, op: &nd::Array2<A>)
         -> MPSResult<&mut Self>
     {
@@ -1484,7 +1485,6 @@ where
     // /// projective measurement. If multiple measurements are required, consider
     // /// using [`Self::measure_multi`], which only contracts and refactors bonds
     // /// once.
-    #[inline]
     pub fn measure<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
     where R: Rng + ?Sized
     {
@@ -1518,7 +1518,6 @@ where
     // ///
     // /// If any particle index is out of bounds, no projection is performed and
     // /// its outcome is omitted.
-    // #[inline]
     // pub fn measure_multi<I, R>(&mut self, particles: I, rng: &mut R)
     //     -> Vec<usize>
     // where
@@ -1573,7 +1572,6 @@ where
     /// Convert to an unevaluated [`Network`].
     ///
     /// All physical indices must be unique.
-    #[inline]
     pub fn into_network(self) -> Network<MPSIndex<T>, A> {
         let Self { data, outs, svals, n, .. } = self;
         let mut network: Network<MPSIndex<T>, A> = Network::new();
@@ -1632,7 +1630,6 @@ where
 
     /// Convert to an unevaluated [`Network`] representing the pure state as a
     /// density matrix.
-    #[inline]
     pub fn into_network_density(self) -> Network<MPSMatIndex<T>, A> {
         unsafe {
             let mut net
@@ -1746,7 +1743,6 @@ where
 {
     /// Contract the MPS and convert to a single [`Tensor`] representing the
     /// pure state.
-    #[inline]
     pub fn into_tensor(self) -> Tensor<T, A> {
         let tens
             = self.into_network()
@@ -1757,7 +1753,6 @@ where
 
     /// Contract the MPS and convert to a single [`Tensor`] representing the
     /// pure state as a density matrix.
-    #[inline]
     pub fn into_tensor_density(self) -> Tensor<MatIndex<T>, A> {
         let dens
             = self.into_network_density()
@@ -1770,7 +1765,6 @@ where
     /// partial trace of the state.
     ///
     /// Particles outside of `part` will be traced over.
-    #[inline]
     pub fn into_tensor_part(self, part: Range<usize>) -> Tensor<MatIndex<T>, A>
     {
         let dens
@@ -1782,7 +1776,6 @@ where
 
     /// Contract the MPS into a density matrix and compute the `a`-th Rényi
     /// entropy of a subspace.
-    #[inline]
     pub fn entropy_ry(&self, a: u32, part: Range<usize>) -> A::Re
     where
         T: Ord,
@@ -1817,7 +1810,6 @@ where
 {
     /// Like [`Self::into_tensor`], but using a [`Pool`] for parallel
     /// contractions.
-    #[inline]
     pub fn into_tensor_par(self, pool: &Pool<MPSIndex<T>, A>)
         -> Tensor<T, A>
     {
@@ -1830,7 +1822,6 @@ where
 
     /// Like [`Self::into_tensor_density`], but using a [`Pool`] for
     /// parallel contractions.
-    #[inline]
     pub fn into_tensor_density_par(
         self,
         pool: &Pool<MPSMatIndex<T>, A>,
@@ -1845,7 +1836,6 @@ where
 
     /// Like [`Self::into_tensor_part`], but using a [`Pool`] for
     /// parallel contractions.
-    #[inline]
     pub fn into_tensor_part_par(
         self,
         part: Range<usize>,
@@ -1861,7 +1851,6 @@ where
 
     /// Like [`Self::entropy_ry`], but using a [`Pool`] for parallel
     /// contractions.
-    #[inline]
     pub fn entropy_ry_par(
         &self,
         a: u32,
@@ -1900,7 +1889,6 @@ impl MPS<Q, C64> {
     /// defaults to zero.
     ///
     /// Fails if `n == 0`.
-    #[inline]
     pub fn new_qubits(
         n: usize,
         trunc: Option<BondDim<f64>>,
@@ -1912,7 +1900,6 @@ impl MPS<Q, C64> {
     /// Perform the action of a gate.
     ///
     /// Does nothing if any qubit indices are out of bounds.
-    #[inline]
     pub fn apply_gate(&mut self, gate: Gate) -> &mut Self {
         match gate {
             Gate::U(k, alpha, beta, gamma) if k < self.n => {
@@ -1972,7 +1959,6 @@ impl MPS<Q, C64> {
     }
 
     /// Perform a series of gates.
-    #[inline]
     pub fn apply_circuit<'a, I>(&mut self, gates: I) -> &mut Self
     where I: IntoIterator<Item = &'a Gate>
     {
@@ -2136,11 +2122,9 @@ where T: Idx
 
 impl<T> MatIndex<T> {
     /// Return `true` if `self` is `Ket`.
-    #[inline]
     pub fn is_ket(&self) -> bool { matches!(self, Self::Ket(..)) }
 
     /// Return `true` if `self` is `Bra`.
-    #[inline]
     pub fn is_bra(&self) -> bool { matches!(self, Self::Bra(..)) }
 }
 
@@ -2222,21 +2206,17 @@ where T: Idx
 
 impl<T> MPSIndex<T> {
     /// Return `true` if `self` is `BondL`.
-    #[inline]
     pub fn is_lbond(&self) -> bool { matches!(self, Self::BondL { .. }) }
 
     /// Return `true` if `self` is `BondR`.
-    #[inline]
     pub fn is_rbond(&self) -> bool { matches!(self, Self::BondR { .. }) }
 
     /// Return `true` if `self` is `Physical`.
-    #[inline]
     pub fn is_physical(&self) -> bool { matches!(self, Self::Physical(..)) }
 
     /// Unwrap `self` into a bare physical index.
     ///
     /// *Panics* if `self` is `BondL` or `BondR`.
-    #[inline]
     pub fn into_physical(self) -> T {
         match self {
             Self::Physical(idx) => idx,
@@ -2303,49 +2283,39 @@ where T: Idx
 
 impl<T> MPSMatIndex<T> {
     /// Return `true` if `self` is `BondLKet`.
-    #[inline]
     pub fn is_lbondket(&self) -> bool { matches!(self, Self::BondLKet { .. }) }
 
     /// Return `true` if `self` is `BondLBra`.
-    #[inline]
     pub fn is_lbondbra(&self) -> bool { matches!(self, Self::BondLBra { .. }) }
 
     /// Return `true` if `self` is `BondLKet` or `BondLBra`.
-    #[inline]
     pub fn is_lbond(&self) -> bool {
         matches!(self, Self::BondLKet { .. } | Self::BondLBra { .. })
     }
 
     /// Return `true` if `self` is `BondRKet`.
-    #[inline]
     pub fn is_rbondket(&self) -> bool { matches!(self, Self::BondRKet { .. }) }
 
     /// Return `true` if `self` is `BondRBra`.
-    #[inline]
     pub fn is_rbondbra(&self) -> bool { matches!(self, Self::BondRBra { .. }) }
 
     /// Return `true` if `self` is `BondRKet` or `BondRBra`.
-    #[inline]
     pub fn is_rbond(&self) -> bool {
         matches!(self, Self::BondRKet { .. } | Self::BondRBra { .. })
     }
 
     /// Return `true` if `self` is `PhysicalKet`.
-    #[inline]
     pub fn is_physicalket(&self) -> bool { matches!(self, Self::PhysicalKet(..)) }
 
     /// Return `true` if `self` is `PhysicalBra`.
-    #[inline]
     pub fn is_physicalbra(&self) -> bool { matches!(self, Self::PhysicalBra(..)) }
 
     /// Return `true` if `self` is `PhysicalKet` or `PhysicalBra`.
-    #[inline]
     pub fn is_physical(&self) -> bool {
         matches!(self, Self::PhysicalKet(..) | Self::PhysicalBra(..))
     }
 
     /// Return `true` if `self` is `BondLKet`, `BondRKet`, or `PhysicalKet`.
-    #[inline]
     pub fn is_ket(&self) -> bool {
         matches!(
             self,
@@ -2356,7 +2326,6 @@ impl<T> MPSMatIndex<T> {
     }
 
     /// Return `true` if `self` is `BondLBra`, `BondRBra`, or `PhysicalBra`.
-    #[inline]
     pub fn is_bra(&self) -> bool {
         matches!(
             self,
@@ -2369,7 +2338,6 @@ impl<T> MPSMatIndex<T> {
     /// Unwrap `self` into a physical index, preserving ket/bra-ness.
     ///
     /// *Panics* if `self` is `BondLKet`, `BondLBra`, `BondRKet`, or `BondRBra`.
-    #[inline]
     pub fn into_physical(self) -> MatIndex<T> {
         match self {
             Self::PhysicalKet(idx) => MatIndex::Ket(idx),
@@ -2389,7 +2357,6 @@ impl<T> MPSMatIndex<T> {
         }
     }
 
-    #[inline]
     fn from_mps(idx: MPSIndex<T>) -> Self {
         match idx {
             MPSIndex::BondL { label, dim } => Self::BondLKet { label, dim },
@@ -2399,7 +2366,6 @@ impl<T> MPSMatIndex<T> {
     }
 
     /// Flip the bra/ket-ness of `self`.
-    #[inline]
     pub fn conj(self) -> Self {
         match self {
             Self::BondLKet { label, dim } => Self::BondLBra { label, dim },

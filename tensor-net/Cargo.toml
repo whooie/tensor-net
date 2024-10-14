@@ -21,6 +21,11 @@ rustc-hash = "1.1.0"
 statrs = "0.17.1"
 thiserror = "1.0.58"
 
+[dev-dependencies.whooie]
+git = "https://gitlab.com/whooie/rust-lib.git"
+version = "*"
+features = [ "ndarray-utils",]
+
 [lib]
 path = "lib/lib.rs"
 name = "tensor_net"

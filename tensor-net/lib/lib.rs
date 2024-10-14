@@ -11,6 +11,7 @@ pub mod network;
 pub mod pool;
 
 pub mod mps;
+pub mod pmps;
 pub mod lazymps;
 pub mod gate;
 pub mod circuit;

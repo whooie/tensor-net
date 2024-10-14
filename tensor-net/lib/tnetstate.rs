@@ -488,7 +488,6 @@ impl Partition {
     }
 
     /// Return `true` if `self` contains `k`.
-    #[inline]
     pub fn contains(&self, k: usize) -> bool {
         match self {
             Self::Left(r) => k < *r,
@@ -500,7 +499,6 @@ impl Partition {
 
     /// Returns the number of qubits contained in `self`, with consideration for
     /// fixed total system size `n`.
-    #[inline]
     pub fn size(&self, n: usize) -> usize {
         match self {
             Self::Left(r) => (*r).min(n),
