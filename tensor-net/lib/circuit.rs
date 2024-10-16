@@ -658,10 +658,11 @@ impl MPSCircuit {
 }
 
 /// Iterator type for qubit indices under a two-qubit gate tiling.
-struct TileQ2(std::iter::StepBy<std::ops::Range<usize>>);
+pub struct TileQ2(std::iter::StepBy<std::ops::Range<usize>>);
 
 impl TileQ2 {
-    fn new(offs: bool, stop: usize) -> Self {
+    /// Create a new `TileQ2`.
+    pub fn new(offs: bool, stop: usize) -> Self {
         Self((if offs { 1 } else { 0 } .. stop - 1).step_by(2))
     }
 }

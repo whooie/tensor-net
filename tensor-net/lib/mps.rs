@@ -960,7 +960,6 @@ where
     // apply two bidirectional sweeps of the MPS starting at a particular site,
     // avoiding double-refactors at the edges
     // assumes `c` is in bounds
-    #[inline]
     fn refactor_sweep_centered(&mut self, c: usize) {
         if c == 0 {
             for k in  0..self.n - 1        { self.local_refactor(k); }
@@ -1083,18 +1082,17 @@ where
         }
     }
 
-    // calculates the probability of the `k`-particle being in the `p`-th state
-    // assume `k` and `p` are in bounds
-    #[inline]
-    fn local_prob(&self, k: usize, p: usize) -> A {
+    // calculates the probability of the `k`-th particle being in the `p`-th
+    // state assume `k` and `p` are in bounds
+    fn local_prob(&self, k: usize, p: usize) -> A::Re {
         if k == 0 {
             let gk0p_ = &self.data[k].slice(nd::s![0, p, ..]);
             let lk = &self.svals[k];
             nd::Zip::from(gk0p_)
                 .and(lk)
-                .fold(A::zero(), |acc, gk0pw, lkw| {
-                    gk0pw.conj() * *gk0pw
-                        * A::from_re(lkw.powi(2))
+                .fold(A::Re::zero(), |acc, gk0pw, lkw| {
+                    (gk0pw.conj() * *gk0pw).re()
+                        * lkw.powi(2)
                     + acc
                 })
         } else if k == self.n - 1 {
@@ -1102,9 +1100,9 @@ where
             let gk_p0 = &self.data[k].slice(nd::s![.., p, 0]);
             nd::Zip::from(gk_p0)
                 .and(lkm1)
-                .fold(A::zero(), |acc, gkvp0, lkm1v| {
-                    gkvp0.conj() * *gkvp0
-                        * A::from_re(lkm1v.powi(2))
+                .fold(A::Re::zero(), |acc, gkvp0, lkm1v| {
+                    (gkvp0.conj() * *gkvp0).re()
+                        * lkm1v.powi(2)
                     + acc
                 })
         } else {
@@ -1113,18 +1111,95 @@ where
             let lk = &self.svals[k];
             nd::Zip::from(gk_p_.outer_iter())
                 .and(lkm1)
-                .fold(A::zero(), |acc, gkvp_, lkm1v| {
+                .fold(A::Re::zero(), |acc, gkvp_, lkm1v| {
                     nd::Zip::from(gkvp_)
                         .and(lk)
-                        .fold(A::zero(), |acc, gkvpw, lkw| {
-                            gkvpw.conj() * *gkvpw
-                                * A::from_re(lkw.powi(2))
+                        .fold(A::Re::zero(), |acc, gkvpw, lkw| {
+                            (gkvpw.conj() * *gkvpw).re()
+                                * lkw.powi(2)
                             + acc
                         })
-                        * A::from_re(lkm1v.powi(2))
+                        * lkm1v.powi(2)
                     + acc
                 })
         }
+    }
+
+    /// Return the probability of the `k`-th particle being in its `p`-th state.
+    ///
+    /// Returns `None` if `k` or `p` is out of bounds.
+    pub fn prob(&self, k: usize, p: usize) -> Option<A::Re> {
+        if !self.outs.get(k).is_some_and(|idx| p < idx.dim()) { return None; }
+        Some(self.local_prob(k, p))
+    }
+
+    // calculates the probabilities for all available quantum numbers of the
+    // `k`-th particle
+    // assume `k` is in bounds
+    fn local_probs(&self, k: usize) -> Vec<A::Re> {
+        if self.n == 1 {
+            self.data[k].iter()
+                .map(|g| (g.conj() * *g).re())
+                .collect()
+        } else if k == 0 {
+            let gk0__ = self.data[k].slice(nd::s![0, .., ..]);
+            let lk = self.svals[k].view();
+            gk0__.outer_iter()
+                .map(|gk0s_| {
+                    nd::Zip::from(gk0s_)
+                        .and(lk)
+                        .fold(A::Re::zero(), |acc, gk0su, lku| {
+                            (gk0su.conj() * *gk0su).re()
+                                * lku.powi(2)
+                            + acc
+                        })
+                })
+                .collect()
+        } else if k == self.n - 1 {
+            let lkm1 = self.svals[k - 1].view();
+            let gk__0 = self.data[k].slice(nd::s![.., .., 0]);
+            gk__0.axis_iter(nd::Axis(1))
+                .map(|gk_s0| {
+                    nd::Zip::from(gk_s0)
+                        .and(lkm1)
+                        .fold(A::Re::zero(), |acc, gkus0, lkm1u| {
+                            (gkus0.conj() * *gkus0).re()
+                                * lkm1u.powi(2)
+                            + acc
+                        })
+                })
+                .collect()
+        } else {
+            let lkm1 = self.svals[k - 1].view();
+            let gk = &self.data[k];
+            let lk = self.svals[k].view();
+            gk.axis_iter(nd::Axis(1))
+                .map(|gk_s_| {
+                    nd::Zip::from(gk_s_.outer_iter())
+                        .and(lkm1)
+                        .fold(A::Re::zero(), |acc, gkvs_, lkm1v| {
+                            nd::Zip::from(gkvs_)
+                                .and(lk)
+                                .fold(A::Re::zero(), |acc, gkvsu, lku| {
+                                    (gkvsu.conj() * *gkvsu).re()
+                                        * lku.powi(2)
+                                    + acc
+                                })
+                                * lkm1v.powi(2)
+                            + acc
+                        })
+                })
+                .collect()
+        }
+    }
+
+    /// Return the probabilities of the `k`-th particle being in each of its
+    /// available states.
+    ///
+    /// Returns `None` if `k` is out of bounds.
+    pub fn probs(&self, k: usize) -> Option<Vec<A::Re>> {
+        if k >= self.n { return None; }
+        Some(self.local_probs(k))
     }
 
     // calculates the norm of the subspace belonging to particle `k`
@@ -1385,69 +1460,7 @@ where
     where R: Rng + ?Sized
     {
         let r: A::Re = rng.gen();
-        let probs: Vec<A::Re>;
-        if self.n == 1 {
-            probs
-                = self.data[k].iter()
-                .map(|g| (g.conj() * *g).re())
-                .collect();
-        } else if k == 0 {
-            let gk0__ = self.data[k].slice(nd::s![0, .., ..]);
-            let lk = self.svals[k].view();
-            probs
-                = gk0__.outer_iter()
-                .map(|gk0s_| {
-                    nd::Zip::from(gk0s_)
-                        .and(lk)
-                        .fold(A::Re::zero(), |acc, gk0su, lku| {
-                                (gk0su.conj() * *gk0su).re()
-                                    * lku.powi(2)
-                                + acc
-                            },
-                        )
-                })
-                .collect();
-        } else if k == self.n - 1 {
-            let lkm1 = self.svals[k - 1].view();
-            let gk__0 = self.data[k].slice(nd::s![.., .., 0]);
-            probs
-                = gk__0.axis_iter(nd::Axis(1))
-                .map(|gk_s0| {
-                    nd::Zip::from(gk_s0)
-                        .and(lkm1)
-                        .fold(A::Re::zero(), |acc, gkus0, lkm1u| {
-                                (gkus0.conj() * *gkus0).re()
-                                    * lkm1u.powi(2)
-                                + acc
-                            },
-                        )
-                })
-                .collect();
-        } else {
-            let lkm1 = self.svals[k - 1].view();
-            let gk = &self.data[k];
-            let lk = self.svals[k].view();
-            probs
-                = gk.axis_iter(nd::Axis(1))
-                .map(|gk_s_| {
-                    nd::Zip::from(gk_s_.outer_iter())
-                        .and(lkm1)
-                        .fold(A::Re::zero(), |acc, gkvs_, lkm1v| {
-                                nd::Zip::from(gkvs_)
-                                    .and(lk)
-                                    .fold(A::Re::zero(), |acc, gkvsu, lku| {
-                                            (gkvsu.conj() * *gkvsu).re()
-                                                * lku.powi(2)
-                                            + acc
-                                        },
-                                    )
-                                    * lkm1v.powi(2)
-                                + acc
-                            },
-                        )
-                })
-                .collect();
-        }
+        let probs: Vec<A::Re> = self.local_probs(k);
         let p
             = probs.iter().copied()
             .scan(A::Re::zero(), |cu, pr| { *cu += pr; Some(*cu) })
@@ -1503,10 +1516,9 @@ where
     /// to a particular outcome.
     ///
     /// If `k` is out of bounds or `p` is an invalid quantum number, do nothing.
-    #[inline]
     pub fn measure_postsel(&mut self, k: usize, p: usize) {
         if k >= self.n || p >= self.outs[k].dim() { return; }
-        let renorm = ComplexFloat::sqrt(self.local_prob(k, p));
+        let renorm = A::from_re(Float::sqrt(self.local_prob(k, p)));
         self.project(k, p, renorm);
         self.refactor_sweep();
     }
