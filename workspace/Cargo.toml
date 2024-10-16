@@ -44,6 +44,10 @@ path = "src/fixed_circuit_conserv.rs"
 name = "fixed_circuit_conserv"
 
 [[bin]]
+path = "src/fixed_conserv_exact.rs"
+name = "fixed_conserv_exact"
+
+[[bin]]
 path = "src/testing.rs"
 name = "testing"
 
