@@ -10,17 +10,29 @@ use whooie::{ mkdir, write_npz };
 /// Number of qubits
 const NQUBITS: usize = 15;
 /// Circuit depth
-const DEPTH: usize = 3 * NQUBITS;
+const DEPTH: usize = 2 * NQUBITS;
 /// Measurement probabilities
+// const PMEAS: &[f64] = &[
+//     0.00, 0.02, 0.04, 0.06, 0.08,
+//     0.10, 0.12, 0.14, 0.16, 0.18,
+//     0.20, 0.22, 0.24, 0.26, 0.28,
+//     0.30, 0.32, 0.34, 0.36, 0.38,
+//     0.40,
+// ];
 const PMEAS: &[f64] = &[
-    0.025, 0.050, 0.075, 0.100, 0.125, 0.150, 0.175, 0.200
+    0.000, 0.025, 0.050, 0.075,
+    0.100, 0.125, 0.150, 0.175,
+    0.200, 0.225, 0.250, 0.275,
+    0.300, 0.325, 0.350, 0.375,
+    0.400,
 ];
 /// Bond dimensions
 const BONDS: &[Option<usize>] = &[
-    None, Some(16), Some(32), Some(64), /*Some(128),*/
+    Some(2), Some(4), Some(8), Some(16), Some(32), Some(64), /*Some(128),*/ None,
 ];
 /// Number of circuits to generate
-const CIRCS: usize = 10;
+const CIRCS: usize = 12;
+// const CIRCS: usize = 50;
 /// Time spacing between target measurements
 const DT: usize = 2;
 /// Qubit indices of target measurements
@@ -43,11 +55,14 @@ where R: Rng + ?Sized
 {
     let circuit = Circuit::gen(NQUBITS, config, true, rng)
         .expect("error generating fixed circuit");
-    let offs = circuit.depth() % 2 == 1;
+    assert!(
+        circuit.layers().iter()
+        .all(|layer| layer.unis.iter().all(|uni| uni.is_exact()))
+    );
     let extra: Vec<Vec<Unitary>> =
-        (0..dt)
-        .map(|_| {
-            TileQ2::new(offs, NQUBITS)
+        (0..dt + 1)
+        .map(|t| {
+            TileQ2::new((circuit.depth() + t) % 2 == 1, NQUBITS)
                 .map(|k| {
                     let haar2 = haar(2, rng);
                     Unitary::ExactGate(ExactGate::Q2(k, haar2))
@@ -87,56 +102,63 @@ fn apply_unis(state: &mut MPS<Q, C64>, unis: &[Unitary]) {
 fn sample_dist(circ: &CircuitExtra, bond: BondDim<f64>)
     -> MeasDist
 {
+    const EPSILON: f64 = 1e-12;
     let mut mps =
         MPSCircuit::new(circ.circuit.nqubits(), Some(bond), None);
     mps.run_fixed(&circ.circuit, None);
     let mut state = mps.into_state();
+
+    let bond_bound = bond.bound().unwrap_or(usize::MAX);
+    let max_bond = state.max_bond_dim().unwrap();
+    assert!(max_bond <= bond_bound);
+
     let (x0, x1) = circ.target_x;
     if let Some(layer) = circ.extra.first() {
         apply_unis(&mut state, layer);
         let p_x0 = state.probs(x0).unwrap();
-        assert!((p_x0[0] + p_x0[1] - 1.0).abs() < 1e-15);
-
-        let mut state_0 = state.clone();
-        state_0.measure_postsel(x0, 0);
-        circ.extra[1..].iter()
-            .for_each(|layer| { apply_unis(&mut state_0, layer); });
-        let p_0_x1 = state_0.probs(x1).unwrap();
-        assert!((p_0_x1[0] + p_0_x1[1] - 1.0).abs() < 1e-15);
-
-        let mut state_1 = state;
-        state_1.measure_postsel(x0, 1);
-        circ.extra[1..].iter()
-            .for_each(|layer| { apply_unis(&mut state_1, layer); });
-        let p_1_x1 = state_1.probs(x1).unwrap();
-        assert!((p_1_x1[0] + p_1_x1[1] - 1.0).abs() < 1e-15);
-
-        MeasDist {
-            p_00: p_x0[0] * p_0_x1[0],
-            p_01: p_x0[0] * p_0_x1[1],
-            p_10: p_x0[1] * p_1_x1[0],
-            p_11: p_x0[1] * p_1_x1[1],
+        if (p_x0[0] + p_x0[1] - 1.0).abs() >= EPSILON {
+            eprintln!("{:?}", p_x0);
+            eprintln!("{:e}", (p_x0[0] + p_x0[1] - 1.0).abs());
+            panic!("bad probabilities!");
         }
+
+        let (p_00, p_01) =
+            if p_x0[0] > 0.0 {
+                let mut state_0 = state.clone();
+                state_0.measure_postsel(x0, 0);
+                circ.extra[1..].iter()
+                    .for_each(|layer| { apply_unis(&mut state_0, layer); });
+                let p_0_x1 = state_0.probs(x1).unwrap();
+                if (p_0_x1[0] + p_0_x1[1] - 1.0).abs() >= EPSILON {
+                    eprintln!("{:?}", p_0_x1);
+                    eprintln!("{:e}", (p_0_x1[0] + p_0_x1[1] - 1.0).abs());
+                    panic!("bad probabilities!");
+                }
+                (p_x0[0] * p_0_x1[0], p_x0[0] * p_0_x1[1])
+            } else {
+                (0.0, 0.0)
+            };
+
+        let (p_10, p_11) =
+            if p_x0[1] > 0.0 {
+                let mut state_1 = state;
+                state_1.measure_postsel(x0, 1);
+                circ.extra[1..].iter()
+                    .for_each(|layer| { apply_unis(&mut state_1, layer); });
+                let p_1_x1 = state_1.probs(x1).unwrap();
+                if (p_1_x1[0] + p_1_x1[1] - 1.0).abs() >= EPSILON {
+                    eprintln!("{:?}", p_1_x1);
+                    eprintln!("{:e}", (p_1_x1[0] + p_1_x1[1] - 1.0).abs());
+                    panic!("bad probabilities!");
+                }
+                (p_x0[1] * p_1_x1[0], p_x0[1] * p_1_x1[1])
+            } else {
+                (0.0, 0.0)
+            };
+
+        MeasDist { p_00, p_01, p_10, p_11 }
     } else {
-        let p_x0 = state.probs(x0).unwrap();
-        assert!((p_x0[0] + p_x0[1] - 1.0).abs() < 1e-15);
-
-        let mut state_0 = state.clone();
-        state_0.measure_postsel(x0, 0);
-        let p_0_x1 = state_0.probs(x1).unwrap();
-        assert!((p_0_x1[0] + p_0_x1[1] - 1.0).abs() < 1e-15);
-
-        let mut state_1 = state;
-        state_1.measure_postsel(x0, 1);
-        let p_1_x1 = state_1.probs(x1).unwrap();
-        assert!((p_1_x1[0] + p_1_x1[1] - 1.0).abs() < 1e-15);
-
-        MeasDist {
-            p_00: p_x0[0] * p_0_x1[0],
-            p_01: p_x0[0] * p_0_x1[1],
-            p_10: p_x0[1] * p_1_x1[0],
-            p_11: p_x0[1] * p_1_x1[1],
-        }
+        unreachable!()
     }
 }
 
@@ -188,11 +210,14 @@ fn main() {
         arrays: {
             "size" => &nd::array![NQUBITS as i32],
             "depth" => &nd::array![DEPTH as i32],
+            "circs" => &nd::array![CIRCS as i32],
             "p_meas" =>
                 &PMEAS.iter().copied().collect::<nd::Array1<f64>>(),
             "chi" =>
                 &BONDS.iter().copied().map(|b| b.unwrap_or(0) as i32)
                 .collect::<nd::Array1<i32>>(),
+            "dt" => &nd::array![DT as i32],
+            "target_x" => &nd::array![TARGET_X.0 as i32, TARGET_X.1 as i32],
             "dists" => &data,
         }
     );
