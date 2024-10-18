@@ -151,6 +151,23 @@ impl Gate {
         kinds[rng.gen_range(0..n)].sample(arg, rng)
     }
 
+    /// Return the index of the (left-most) qubit that the unitary acts on.
+    pub fn idx(&self) -> usize {
+        match self {
+            Self::U(k, ..) => *k,
+            Self::H(k) => *k,
+            Self::X(k) => *k,
+            Self::Z(k) => *k,
+            Self::S(k) => *k,
+            Self::SInv(k) => *k,
+            Self::XRot(k, _) => *k,
+            Self::ZRot(k, _) => *k,
+            Self::CX(k) => *k,
+            Self::CXRev(k) => *k,
+            Self::CZ(k) => *k,
+            Self::Haar2(k) => *k,
+        }
+    }
 }
 
 /// Identifier for a single one-qubit gate.
@@ -310,6 +327,14 @@ impl ExactGate {
         let kinds: Vec<&G> = kinds.into_iter().collect();
         let n = kinds.len();
         kinds[rng.gen_range(0..n)].sample(arg, rng)
+    }
+
+    /// Return the index of the (left-most) qubit that the unitary acts on.
+    pub fn idx(&self) -> usize {
+        match self {
+            Self::Q1(k, _) => *k,
+            Self::Q2(k, _) => *k,
+        }
     }
 }
 

@@ -165,6 +165,16 @@ pub enum BondDim<A> {
     Cutoff(A),
 }
 
+impl<A> BondDim<A> {
+    /// Return the upper bound if `self` is `Const`.
+    pub fn bound(&self) -> Option<usize> {
+        match self {
+            Self::Const(x) => Some(*x),
+            Self::Cutoff(_) => None,
+        }
+    }
+}
+
 /// Convenience trait to identify complex numbers that can be used in
 /// linear-algebraic operations.
 pub trait ComplexLinalgScalar

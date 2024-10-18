@@ -984,6 +984,19 @@ pub enum Unitary {
     ExactGate(ExactGate),
 }
 
+impl Unitary {
+    /// Return the index of the (left-most) qubit that the unitary acts on.
+    pub fn idx(&self) -> usize {
+        match self {
+            Self::Gate(g) => g.idx(),
+            Self::ExactGate(g) => g.idx(),
+        }
+    }
+
+    /// Return `true` if `self` is `ExactGate`.
+    pub fn is_exact(&self) -> bool { matches!(self, Self::ExactGate(_)) }
+}
+
 impl From<Gate> for Unitary {
     fn from(gate: Gate) -> Self { Self::Gate(gate) }
 }
@@ -1060,6 +1073,9 @@ impl Circuit {
     pub fn get_layer_mut(&mut self, k: usize) -> Option<&mut OpLayer> {
         self.ops.get_mut(k)
     }
+
+    /// Return a reference to all layers in the circuit.
+    pub fn layers(&self) -> &Vec<OpLayer> { &self.ops }
 
     fn sample_simple<R>(
         n: usize,
