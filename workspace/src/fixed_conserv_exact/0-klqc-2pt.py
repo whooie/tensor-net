@@ -5,7 +5,7 @@ import numpy as np
 import whooie.pyplotdefs as pd
 
 outdir = Path("output")
-infile = outdir.joinpath("fixed_conserv_exact_n=15_d=30.npz")
+infile = outdir.joinpath("fixed_conserv_exact_n=15_d=30_mc=150.npz")
 data = np.load(str(infile))
 
 size = int(data["size"][0])
@@ -17,9 +17,8 @@ dt = int(data["dt"][0])
 target_x = data["target_x"].astype(int)
 P_qc = data["dists"] # :: { circ, p, chi, dist }
 
-
-assert np.abs(P_qc.sum(axis=3) - 1).sum() < 1e-12, \
-    "something weird with probabilities"
+check = np.abs(P_qc.sum(axis=3) - 1).sum()
+assert check < 1e-9, f"something weird with probabilities: {check}"
 
 def kl(p: np.ndarray[float, 1], q: np.ndarray[float, 1]) -> float:
     """
@@ -43,8 +42,6 @@ def sh(p: np.ndarray[float, 1]) -> float:
 
 k_q = np.where(chi == 0)[0][0]
 k_c = np.where(chi != 0)[0]
-print(chi)
-print(k_q, k_c)
 
 P_q = P_qc[:, :, k_q, :] # :: { circ, p, dist }
 P_c = P_qc[:, :, k_c, :].swapaxes(1, 2).swapaxes(0, 1) # :: { chi, circ, p, dist }

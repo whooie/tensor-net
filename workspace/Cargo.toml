@@ -51,6 +51,14 @@ name = "fixed_conserv_exact"
 path = "src/testing.rs"
 name = "testing"
 
+[[bin]]
+path = "src/sampling_testing.rs"
+name = "sampling_testing"
+
+[[bin]]
+path = "src/rotation_testing.rs"
+name = "rotation_testing"
+
 [profile.release]
 lto = true
 panic = "abort"

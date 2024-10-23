@@ -28,15 +28,19 @@ const PMEAS: &[f64] = &[
 ];
 /// Bond dimensions
 const BONDS: &[Option<usize>] = &[
-    Some(2), Some(4), Some(8), Some(16), Some(32), Some(64), /*Some(128),*/ None,
+    Some( 2), Some( 4), Some( 6), Some( 8), Some(10),
+    Some(12), Some(14), Some(16), Some(32), Some(64),
+    None,
 ];
 /// Number of circuits to generate
-const CIRCS: usize = 12;
-// const CIRCS: usize = 50;
+// const CIRCS: usize = 12;
+const CIRCS: usize = 25;
 /// Time spacing between target measurements
 const DT: usize = 2;
 /// Qubit indices of target measurements
 const TARGET_X: (usize, usize) = (NQUBITS / 2, NQUBITS / 2);
+/// Number of times to run each circuit
+const AVG: usize = 30;
 
 #[derive(Clone, Debug)]
 struct CircuitExtra {
@@ -167,50 +171,98 @@ fn main() {
     mkdir!(outdir);
 
     // this is kinda bad
-    static mut CIRC_COUNTER: usize = 0;
-    unsafe { eprint!("    {} / {} ", CIRC_COUNTER, CIRCS); }
+    static mut SAMPLE: usize = 0;
 
-    let mut data: nd::Array4<f64> =
-        nd::Array4::zeros((CIRCS, PMEAS.len(), BONDS.len(), 4));
-    nd::Zip::from(data.outer_iter_mut())
-        .par_for_each(|mut data_c| {
-            let mut rng = thread_rng();
-            let config = CircuitConfig {
-                depth: DepthConfig::Const(DEPTH),
-                gates: GateConfig::Haar2,
-                measurement: MeasureConfig {
-                    layer: MeasLayerConfig::Every,
-                    prob: MeasProbConfig::Random(*PMEAS.first().unwrap()),
-                    reset: false,
-                },
-                entropy: EntropyConfig::VonNeumann(NQUBITS / 2..NQUBITS),
-            };
-            let mut circ = gen_circuit_extra(config, DT, TARGET_X, &mut rng);
-            for (&p, mut data_cp) in PMEAS.iter().zip(data_c.outer_iter_mut()) {
-                circ.circuit.upsample_measurements(p, &mut rng);
-                for (&b, mut data_cpb) in BONDS.iter().zip(data_cp.outer_iter_mut()) {
-                    let bond =
-                        b.map(BondDim::Const).unwrap_or(BondDim::Cutoff(1e-9));
-                    let dist = sample_dist(&circ, bond);
-                    data_cpb[0] = dist.p_00;
-                    data_cpb[1] = dist.p_01;
-                    data_cpb[2] = dist.p_10;
-                    data_cpb[3] = dist.p_11;
+    fn prog(i: usize, j: usize, k: usize, l: usize) -> String {
+        format!("\r    {} / {}; {} / {}; {} / {}; {} / {} ",
+            i, CIRCS, j, PMEAS.len(), k, BONDS.len(), l, AVG)
+    }
+
+    let mut rng = thread_rng();
+    let mut data: nd::Array5<f64> =
+        nd::Array5::zeros((CIRCS, PMEAS.len(), BONDS.len(), AVG, 4));
+
+    eprint!("{}", prog(0, 0, 0, 0));
+    for (i, mut data_c) in data.outer_iter_mut().enumerate() {
+        let config = CircuitConfig {
+            depth: DepthConfig::Const(DEPTH),
+            gates: GateConfig::Haar2,
+            measurement: MeasureConfig {
+                layer: MeasLayerConfig::Every,
+                prob: MeasProbConfig::Random(*PMEAS.first().unwrap()),
+                reset: false,
+            },
+            entropy: EntropyConfig::VonNeumann(NQUBITS / 2..NQUBITS),
+        };
+        let mut circ = gen_circuit_extra(config, DT, TARGET_X, &mut rng);
+        for (j, (&p, mut data_cp)) in PMEAS.iter().zip(data_c.outer_iter_mut()).enumerate() {
+            circ.circuit.upsample_measurements(p, &mut rng);
+            for (k, (&b, mut data_cpb)) in BONDS.iter().zip(data_cp.outer_iter_mut()).enumerate() {
+                let bond =
+                    b.map(BondDim::Const)
+                    .unwrap_or(BondDim::Cutoff(1e-9));
+                unsafe {
+                    SAMPLE = 0;
+                    eprint!("{}", prog(i + 1, j + 1, k + 1, SAMPLE));
                 }
+                nd::Zip::from(data_cpb.outer_iter_mut())
+                    .par_for_each(|mut data_cpbs| {
+                        let dist = sample_dist(&circ, bond);
+                        data_cpbs[0] = dist.p_00;
+                        data_cpbs[1] = dist.p_01;
+                        data_cpbs[2] = dist.p_10;
+                        data_cpbs[3] = dist.p_11;
+                        unsafe {
+                            SAMPLE += 1;
+                            eprint!("{}", prog(i + 1, j + 1, k + 1, SAMPLE));
+                        }
+                    });
             }
-            unsafe {
-                CIRC_COUNTER += 1;
-                eprint!("\r    {} / {} ", CIRC_COUNTER, CIRCS);
-            }
-        });
+        }
+    }
 
-    let outfile = format!("fixed_conserv_exact_n={}_d={}.npz", NQUBITS, DEPTH);
+    // nd::Zip::from(data.outer_iter_mut())
+    //     .par_for_each(|mut data_c| {
+    //         let mut rng = thread_rng();
+    //         let config = CircuitConfig {
+    //             depth: DepthConfig::Const(DEPTH),
+    //             gates: GateConfig::Haar2,
+    //             measurement: MeasureConfig {
+    //                 layer: MeasLayerConfig::Every,
+    //                 prob: MeasProbConfig::Random(*PMEAS.first().unwrap()),
+    //                 reset: false,
+    //             },
+    //             entropy: EntropyConfig::VonNeumann(NQUBITS / 2..NQUBITS),
+    //         };
+    //         let mut circ = gen_circuit_extra(config, DT, TARGET_X, &mut rng);
+    //         for (&p, mut data_cp) in PMEAS.iter().zip(data_c.outer_iter_mut()) {
+    //             circ.circuit.upsample_measurements(p, &mut rng);
+    //             for (&b, mut data_cpb) in BONDS.iter().zip(data_cp.outer_iter_mut()) {
+    //                 let bond =
+    //                     b.map(BondDim::Const).unwrap_or(BondDim::Cutoff(1e-9));
+    //                 let dist = sample_dist(&circ, bond);
+    //                 data_cpb[0] = dist.p_00;
+    //                 data_cpb[1] = dist.p_01;
+    //                 data_cpb[2] = dist.p_10;
+    //                 data_cpb[3] = dist.p_11;
+    //             }
+    //         }
+    //         unsafe {
+    //             CIRC_COUNTER += 1;
+    //             eprint!("\r    {} / {} ", CIRC_COUNTER, CIRCS);
+    //         }
+    //     });
+
+    let outfile =
+        format!("fixed_conserv_exact_n={}_d={}_circs={}_avg={}.npz",
+            NQUBITS, DEPTH, CIRCS, AVG);
     write_npz!(
         outdir.join(outfile),
         arrays: {
             "size" => &nd::array![NQUBITS as i32],
             "depth" => &nd::array![DEPTH as i32],
             "circs" => &nd::array![CIRCS as i32],
+            "avg" => &nd::array![AVG as i32],
             "p_meas" =>
                 &PMEAS.iter().copied().collect::<nd::Array1<f64>>(),
             "chi" =>

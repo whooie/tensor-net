@@ -1471,6 +1471,13 @@ where
     {
         let r: A::Re = rng.gen();
         let probs: Vec<A::Re> = self.local_probs(k);
+        // let probsum: A::Re =
+        //     probs.iter().copied().fold(A::Re::zero(), A::Re::add);
+        // let ten: A::Re =
+        //     A::Re::one() + A::Re::one() + A::Re::one() + A::Re::one()
+        //     + A::Re::one() + A::Re::one() + A::Re::one() + A::Re::one()
+        //     + A::Re::one() + A::Re::one();
+        // assert!((probsum - A::Re::one()).abs() < ten.powi(3) * A::Re::epsilon());
         let p
             = probs.iter().copied()
             .scan(A::Re::zero(), |cu, pr| { *cu += pr; Some(*cu) })
