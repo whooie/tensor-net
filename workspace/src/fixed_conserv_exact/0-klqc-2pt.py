@@ -5,11 +5,8 @@ import numpy as np
 import whooie.pyplotdefs as pd
 
 outdir = Path("output")
-# infile = outdir.joinpath("fixed_conserv_exact_n=15_d=30_mc=150.npz")
-# infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_mc=1.npz")
-# infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_mc=20.npz")
-# infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_mc=50.npz")
-infile = outdir.joinpath("fixed_conserv_exact_n=11_d=22_mc=50.npz")
+infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_circs=25_avg=100.npz")
+# infile = outdir.joinpath("fixed_conserv_exact_n=15_d=30_circs=25_avg=30.npz")
 data = np.load(str(infile))
 
 size = int(data["size"][0])
@@ -19,7 +16,7 @@ p_meas = data["p_meas"]
 chi = data["chi"]
 dt = int(data["dt"][0])
 target_x = data["target_x"].astype(int)
-P_qc = data["dists"] # :: { circ, p, chi, dist }
+P_qc = data["dists"].mean(axis=3) # :: { circ, p, chi, dist }
 
 check = np.abs(P_qc.sum(axis=3) - 1).sum()
 assert check < 1e-9, f"something weird with probabilities: {check}"

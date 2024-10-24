@@ -8,7 +8,7 @@ use tensor_net::mps::*;
 use whooie::{ mkdir, write_npz };
 
 /// Number of qubits
-const NQUBITS: usize = 15;
+const NQUBITS: usize = 10;
 /// Circuit depth
 const DEPTH: usize = 2 * NQUBITS;
 /// Measurement probabilities
@@ -40,7 +40,7 @@ const DT: usize = 2;
 /// Qubit indices of target measurements
 const TARGET_X: (usize, usize) = (NQUBITS / 2, NQUBITS / 2);
 /// Number of times to run each circuit
-const AVG: usize = 30;
+const AVG: usize = 100;
 
 #[derive(Clone, Debug)]
 struct CircuitExtra {
