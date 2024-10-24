@@ -1471,6 +1471,7 @@ where
     {
         let r: A::Re = rng.gen();
         let probs: Vec<A::Re> = self.local_probs(k);
+        // println!("{:?}", probs);
         // let probsum: A::Re =
         //     probs.iter().copied().fold(A::Re::zero(), A::Re::add);
         // let ten: A::Re =

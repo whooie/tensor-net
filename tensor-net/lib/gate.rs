@@ -756,6 +756,41 @@ where
 /// Lazy-static version of [`make_cz2`] for a [`Complex64`][C64] element type.
 pub static CZTENS: Lazy<nd::Array4<C64>> = Lazy::new(make_cz2);
 
+/// Make a swap gate.
+///
+/// Since this gate takes no arguments, consider using the lazily-constructed,
+/// [`Complex64`][C64]-valued [`SWAPMAT`] instead.
+pub fn make_swap<A>() -> nd::Array2<A>
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
+{
+    nd::array![
+        [A::one(),  A::zero(), A::zero(), A::zero()],
+        [A::zero(), A::zero(), A::one(),  A::zero()],
+        [A::zero(), A::one(),  A::zero(), A::zero()],
+        [A::zero(), A::zero(), A::zero(), A::one() ],
+    ]
+}
+
+/// Lazy-static version of [`make_swap`] for a [`Complex64`][C64] element type.
+pub static SWAPMAT: Lazy<nd::Array2<C64>> = Lazy::new(make_swap);
+
+/// Make a swap gate.
+///
+/// Since this gate takes no arguments, consider using the lazily-constructed,
+/// [`Complex64`][C64]-valued [`SWAPTENS`] instead.
+pub fn make_swap2<A>() -> nd::Array4<A>
+where
+    A: ComplexFloat + ComplexFloatExt,
+    <A as ComplexFloat>::Real: std::fmt::Debug,
+{
+    make_swap().into_shape((2, 2, 2, 2)).unwrap()
+}
+
+/// Lazy-static version of [`make_swap2`] for a [`Complex64`][C64] element type.
+pub static SWAPTENS: Lazy<nd::Array4<C64>> = Lazy::new(make_swap2);
+
 /// Generate an `n`-qubit Haar-random unitary matrix.
 pub fn haar<A, R>(n: usize, rng: &mut R) -> nd::Array2<A>
 where

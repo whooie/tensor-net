@@ -5,7 +5,11 @@ import numpy as np
 import whooie.pyplotdefs as pd
 
 outdir = Path("output")
-infile = outdir.joinpath("fixed_conserv_exact_n=15_d=30_mc=150.npz")
+# infile = outdir.joinpath("fixed_conserv_exact_n=15_d=30_mc=150.npz")
+# infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_mc=1.npz")
+# infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_mc=20.npz")
+# infile = outdir.joinpath("fixed_conserv_exact_n=10_d=20_mc=50.npz")
+infile = outdir.joinpath("fixed_conserv_exact_n=11_d=22_mc=50.npz")
 data = np.load(str(infile))
 
 size = int(data["size"][0])
@@ -42,6 +46,7 @@ def sh(p: np.ndarray[float, 1]) -> float:
 
 k_q = np.where(chi == 0)[0][0]
 k_c = np.where(chi != 0)[0]
+print(k_q, k_c)
 
 P_q = P_qc[:, :, k_q, :] # :: { circ, p, dist }
 P_c = P_qc[:, :, k_c, :].swapaxes(1, 2).swapaxes(0, 1) # :: { chi, circ, p, dist }
@@ -62,7 +67,7 @@ data_sh = np.array([sh(P_qc_cpx) for P_qc_cpx in P_qc_flat]) \
 P = pd.Plotter.new(nrows=2, sharex=True, as_plotarray=True)
 
 for (x, kl_x) in zip(chi[k_c], data_kl):
-    P[0].plot(p_meas, kl_x, marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    P[0].semilogy(p_meas, kl_x, marker=".", linestyle="-", label=f"$\\chi = {x}$")
 P[0] \
     .ggrid() \
     .legend(

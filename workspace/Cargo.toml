@@ -59,6 +59,14 @@ name = "sampling_testing"
 path = "src/rotation_testing.rs"
 name = "rotation_testing"
 
+[[bin]]
+path = "src/correlation_testing.rs"
+name = "correlation_testing"
+
+[[bin]]
+path = "src/naive_testing.rs"
+name = "naive_testing"
+
 [profile.release]
 lto = true
 panic = "abort"
