@@ -11,8 +11,8 @@ use whooie::write_npz;
 const N: usize = 12;
 const DT: usize = 1;
 const TARGET_X: (usize, usize) = (N / 2, N / 2);
-const AVG: usize = 100;
-const PMEAS: f64 = 1.0;
+const AVG: usize = 5000;
+const PMEAS: f64 = 1.00;
 
 const EPSILON: f64 = 1e-12;
 
@@ -191,6 +191,8 @@ fn compute_avg<R>(
 ) -> Data
 where R: Rng + ?Sized
 {
+    static mut COUNTER: usize = 0;
+
     if let Some(label) = progress {
         println!("{}", label);
         println!("\r  0 / {} ", avg);
@@ -198,7 +200,7 @@ where R: Rng + ?Sized
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
     }
 
-    static mut COUNTER: usize = 0;
+    unsafe { COUNTER = 0; }
     let mut runs: Vec<Data> =
         (0..avg).into_par_iter()
             .map(|k| {
@@ -221,7 +223,7 @@ where R: Rng + ?Sized
             })
             .collect();
     if progress.is_some() { println!(); }
-    println!("{:?}", runs);
+    // println!("{:?}", runs);
     let mut totals: Data =
         runs.into_iter()
         .fold(
@@ -274,8 +276,8 @@ where R: Rng + ?Sized
 }
 
 fn main() {
-    // let mut rng = thread_rng();
-    let mut rng = StdRng::seed_from_u64(10546);
+    let mut rng = thread_rng();
+    // let mut rng = StdRng::seed_from_u64(10546);
 
     let cursor_reset = || { print!("\x1b[1G\x1b[2A"); };
 

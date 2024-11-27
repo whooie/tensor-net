@@ -4,69 +4,75 @@ use std::path::PathBuf;
 use ndarray as nd;
 use num_complex::Complex64 as C64;
 use rand::{ Rng, SeedableRng, rngs::StdRng, thread_rng };
+use rayon::iter::{ IntoParallelIterator, ParallelIterator };
 use tensor_net::{ circuit::*, gate::*, mps::* };
 use whooie::write_npz;
 
-const N: usize = 12;
+const N: usize = 18;
+const T: usize = 2 * N;
 const DT: usize = 2;
 const TARGET_X: (usize, usize) = (N / 2, N / 2);
 const CIRCS: usize = 50;
-const AVG: usize = 100;
+const RUNS: usize = 500;
+const P_MEAS: &[f64] = &[
+    0.020, 0.030, 0.040, 0.050, 0.070, 0.090,
+    0.100, 0.115, 0.130, 0.140, 0.150, 0.160, 0.170, 0.180, 0.190,
+    0.210, 0.225, 0.250, 0.275,
+    0.300, 0.325, 0.350, 0.375,
+    0.400,
+
+    // 0.900, 0.950, 0.990, 0.995, 1.000,
+];
+const BONDS: &[Option<usize>] = &[
+    Some(2), Some(4), Some(8), Some(16), Some(32), None,
+];
 
 const EPSILON: f64 = 1e-12;
 
 #[derive(Clone, Debug)]
-struct Layer {
-    unis: Vec<(usize, nd::Array2<C64>)>,
-    meas: Vec<usize>,
-}
+struct UniLayer(Vec<(usize, nd::Array2<C64>)>);
 
-impl Layer {
-    fn gen<R>(offs: bool, p_meas: f64, rng: &mut R) -> Self
+impl UniLayer {
+    fn gen<R>(offs: bool, rng: &mut R) -> Self
     where R: Rng + ?Sized
     {
-        let unis: Vec<(usize, nd::Array2<C64>)> =
+        let data: Vec<(usize, nd::Array2<C64>)> =
             TileQ2::new(offs, N)
             .map(|k| (k, haar(2, rng)))
             .collect();
-        let meas: Vec<usize> =
-            (0..N).filter(|_| rng.gen::<f64>() < p_meas).collect();
-        Self { unis, meas }
+        Self(data)
     }
+}
 
-    fn gen_idswap<R>(offs: bool, p_meas: f64, rng: &mut R) -> Self
+#[derive(Clone, Debug)]
+struct MeasLayer(Vec<usize>);
+
+impl MeasLayer {
+    fn gen<R>(p: f64, rng: &mut R) -> Self
     where R: Rng + ?Sized
     {
-        let unis: Vec<(usize, nd::Array2<C64>)> =
-            TileQ2::new(offs, N)
-            .map(|k| {
-                if rng.gen::<bool>() {
-                    (k, make_swap())
-                } else {
-                    (k, nd::Array2::eye(4))
-                }
-            })
+        let data: Vec<usize> =
+            (0..N).filter(|_| rng.gen::<f64>() < p)
             .collect();
-        let meas: Vec<usize> =
-            (0..N).filter(|_| rng.gen::<f64>() < p_meas).collect();
-        Self { unis, meas }
+        Self(data)
     }
 }
 
 fn apply_layer<R>(
     state: &mut MPS<Q, C64>,
-    layer: &Layer,
+    unis: &UniLayer,
+    meas: &MeasLayer,
     target: Option<usize>,
     rng: &mut R,
-) -> Option<Vec<f64>>
+) -> Option<(f64, f64)>
 where R: Rng + ?Sized
 {
-    layer.unis.iter()
+    unis.0.iter()
         .for_each(|(k, uni)| { state.apply_unitary2(*k, uni).unwrap(); });
-    layer.meas.iter()
+    meas.0.iter()
         .filter(|k| !target.is_some_and(|j| j == **k))
         .for_each(|k| { state.measure(*k, rng); });
-    target.and_then(|k| state.probs(k))
+    target.and_then(|k| state.prob(k, 0).zip(state.prob(k, 1)))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -110,121 +116,120 @@ impl Data {
 
 fn sample<R>(
     state_init: &MPS<Q, C64>,
-    targ_layers: &[Layer],
+    uni_layers: &[UniLayer],
+    meas_layers: &[MeasLayer],
     targets: (usize, usize),
     rng: &mut R,
 ) -> Data
 where R: Rng + ?Sized
 {
     let (x0, x1) = targets;
-    let nlayers = targ_layers.len();
-    if let Some(layer) = targ_layers.first() {
-        let mut state = state_init.clone();
-        let mut p_x0 = apply_layer(&mut state, layer, Some(x0), rng).unwrap();
-        if (p_x0[0] + p_x0[1] - 1.0).abs() >= EPSILON {
-            panic!("bad probabilities");
-        }
-        let n = p_x0[0] + p_x0[1];
-        p_x0[0] /= n;
-        p_x0[1] /= n;
+    assert_eq!(uni_layers.len(), meas_layers.len());
+    assert!(!uni_layers.is_empty());
+    let nlayers = uni_layers.len();
+    let (fst_uni, fst_meas) =
+        uni_layers.first().zip(meas_layers.first()).unwrap();
+    let mut state = state_init.clone();
+    let (mut p0, mut p1) =
+        apply_layer(&mut state, fst_uni, fst_meas, Some(x0), rng).unwrap();
+    let frozen = state;
+    let n = p0 + p1;
+    p0 /= n;
+    p1 /= n;
 
-        let (p00, p01) =
-            if p_x0[0] > 0.0 {
-                let mut state0 = state.clone();
-                state0.measure_postsel(x0, 0);
-                targ_layers[1..nlayers - 1].iter()
-                    .for_each(|layer| {
-                        apply_layer(&mut state0, layer, None, rng);
-                    });
-                let mut p_0_x1 =
-                    apply_layer(&mut state0, &targ_layers[nlayers - 1], Some(x1), rng)
-                    .unwrap();
-                if (p_0_x1[0] + p_0_x1[1] - 1.0).abs() >= EPSILON {
-                    panic!("bad probabilities");
-                }
-                let n = p_0_x1[0] + p_0_x1[1];
-                p_0_x1[0] /= n;
-                p_0_x1[1] /= n;
-                (p_x0[0] * p_0_x1[0], p_x0[0] * p_0_x1[1])
-            } else {
-                (0.0, 0.0)
-            };
+    let (p00, p01) =
+        if p0 > 0.0 {
+            let mut state0 = frozen.clone();
+            state0.measure_postsel(x0, 0);
+            uni_layers.iter().zip(meas_layers)
+                .skip(1).take(nlayers - 2)
+                .for_each(|(unis, meas)| {
+                    apply_layer(&mut state0, unis, meas, None, rng);
+                });
+            let (last_uni, last_meas) =
+                uni_layers.last().zip(meas_layers.last()).unwrap();
+            let (mut p0_0, mut p0_1) =
+                apply_layer(&mut state0, last_uni, last_meas, Some(x1), rng)
+                .unwrap();
+            let n = p0_0 + p0_1;
+            p0_0 /= n;
+            p0_1 /= n;
+            (p0 * p0_0, p0 * p0_1)
+        } else {
+            (0.0, 0.0)
+        };
 
-        let (p10, p11) =
-            if p_x0[1] > 0.0 {
-                let mut state1 = state.clone();
-                state1.measure_postsel(x0, 1);
-                targ_layers[1..nlayers - 1].iter()
-                    .for_each(|layer| {
-                        apply_layer(&mut state1, layer, None, rng);
-                    });
-                let mut p_1_x1 =
-                    apply_layer(&mut state1, &targ_layers[nlayers - 1], Some(x1), rng)
-                    .unwrap();
-                if (p_1_x1[0] + p_1_x1[1] - 1.0).abs() >= EPSILON {
-                    panic!("bad probabilities");
-                }
-                let n = p_1_x1[0] + p_1_x1[1];
-                p_1_x1[0] /= n;
-                p_1_x1[1] /= n;
-                (p_x0[1] * p_1_x1[0], p_x0[1] * p_1_x1[1])
-            } else {
-                (0.0, 0.0)
-            };
+    let (p10, p11) =
+        if p1 > 0.0 {
+            let mut state1 = frozen.clone();
+            state1.measure_postsel(x0, 1);
+            uni_layers.iter().zip(meas_layers)
+                .skip(1).take(nlayers - 2)
+                .for_each(|(unis, meas)| {
+                    apply_layer(&mut state1, unis, meas, None, rng);
+                });
+            let (last_uni, last_meas) =
+                uni_layers.last().zip(meas_layers.last()).unwrap();
+            let (mut p1_0, mut p1_1) =
+                apply_layer(&mut state1, last_uni, last_meas, Some(x1), rng)
+                .unwrap();
+            let n = p1_0 + p1_1;
+            p1_0 /= n;
+            p1_1 /= n;
+            (p1 * p1_0, p1 * p1_1)
+        } else {
+            (0.0, 0.0)
+        };
 
-        Data { p00, p01, p10, p11 }
-    } else { unreachable!() }
+    Data { p00, p01, p10, p11 }
 }
 
-fn compute_avg<R>(
-    progress: Option<&str>,
+fn compute_bond_avg(
     bond: Option<BondDim<f64>>,
-    init_layers: &[Layer],
-    targ_layers: &[Layer],
+    init: (&[UniLayer], &[MeasLayer]),
+    targ: (&[UniLayer], &[MeasLayer]),
     targets: (usize, usize),
     avg: usize,
-    rng: &mut R,
 ) -> Data
-where R: Rng + ?Sized
 {
-    if let Some(label) = progress {
-        println!("{}", label);
-        println!("\r  0 / {} ", avg);
-        print!("\x1b[1G\x1b[1A");
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+    static mut COUNTER: usize = 0;
+    let (init_unis, init_meas) = init;
+    assert_eq!(init_unis.len(), init_meas.len());
+    let (targ_unis, targ_meas) = targ;
+    unsafe {
+        COUNTER = 0;
+        eprint!(" {:4} / {:4} ", 0, avg);
     }
+    let runs: Vec<Data> =
+        (0..avg).into_par_iter()
+        .map(|_| {
+            let mut rng = thread_rng();
+            let mut state: MPS<Q, C64> =
+                MPS::new_qubits(N, bond).unwrap();
+            init_unis.iter().zip(init_meas)
+                .for_each(|(unis, meas)| {
+                    apply_layer(&mut state, unis, meas, None, &mut rng);
+                });
+            let res = sample(&state, targ_unis, targ_meas, targets, &mut rng);
+            unsafe {
+                COUNTER += 1;
+                eprint!("\x1b[12D{:4} / {:4} ", COUNTER, avg);
+            }
+            res
+        })
+        .collect();
     let mut totals: Data =
-        (0..avg)
-            .fold(
-                Data { p00: 0.0, p01: 0.0, p10: 0.0, p11: 0.0 },
-                |mut acc, k| {
-                    let mut state: MPS<Q, C64> =
-                        MPS::new_qubits(N, bond).unwrap();
-
-                    // let mut state: MPS<Q, C64> =
-                    //     MPS::new_qnums(
-                    //         (0..N).map(|k| (Q::from(k), k % 2)),
-                    //         bond
-                    //     ).unwrap();
-
-                    init_layers.iter()
-                        .for_each(|layer| {
-                            apply_layer(&mut state, layer, None, rng);
-                        });
-                    let Data { p00, p01, p10, p11 } =
-                        sample(&state, targ_layers, targets, rng);
-                    acc.p00 += p00;
-                    acc.p01 += p01;
-                    acc.p10 += p10;
-                    acc.p11 += p11;
-                    if progress.is_some() {
-                        print!("\r  {} / {} ", k + 1, avg);
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    }
-                    acc
-                },
-            );
-    if progress.is_some() { println!(); }
+        runs.into_iter()
+        .fold(
+            Data { p00: 0.0, p01: 0.0, p10: 0.0, p11: 0.0 },
+            |mut acc, run| {
+                acc.p00 += run.p00;
+                acc.p01 += run.p01;
+                acc.p10 += run.p10;
+                acc.p11 += run.p11;
+                acc
+            },
+        );
     totals.p00 /= avg as f64;
     totals.p01 /= avg as f64;
     totals.p10 /= avg as f64;
@@ -232,59 +237,74 @@ where R: Rng + ?Sized
     totals
 }
 
-fn do_p(p: f64, bonds: &[Option<usize>]) -> Vec<Data> {
-    let mut rng = thread_rng();
-    // let mut rng = StdRng::seed_from_u64(10546);
-
-    let init: Vec<Layer> =
-        (0..2 * N).map(|t| Layer::gen(t % 2 == 1, p, &mut rng)).collect();
-    let targ: Vec<Layer> =
-        (0..DT + 1).map(|t| Layer::gen(t % 2 == 1, p, &mut rng)).collect();
-
-    bonds.iter().copied()
-        .map(|mb_chi| {
-            let mb_bond = mb_chi.map(BondDim::Const);
-            compute_avg(None, mb_bond, &init, &targ, TARGET_X, AVG, &mut rng)
-        })
-        .collect()
-}
-
 fn main() {
-    const P_MEAS: &[f64] = &[
-        0.010, 0.020, 0.030, 0.040, 0.050,
-        0.075, 0.100, 0.125, 0.150, 0.175,
-        0.200,
-    ];
-    const BONDS: &[Option<usize>] = &[
-        Some(2), Some(4), Some(8), Some(16), None,
-    ];
-
     static mut COUNTER: usize = 0;
-    let counter_total: usize = CIRCS * P_MEAS.len();
+    let counter_total: usize = CIRCS * P_MEAS.len() * BONDS.len();
     eprint!("\r  0 / {} ", counter_total);
 
     let mut data: nd::Array4<f64> =
         nd::Array4::zeros((CIRCS, P_MEAS.len(), BONDS.len(), 4));
-    nd::Zip::from(data.outer_iter_mut())
-        .par_for_each(|mut data_c| {
-            for (p, mut data_cp) in P_MEAS.iter().zip(data_c.outer_iter_mut()) {
-                let dist_p: Vec<Data> = do_p(*p, BONDS);
-                for (dist_pb, mut data_cpb) in dist_p.into_iter().zip(data_cp.outer_iter_mut()) {
-                    data_cpb[0] = dist_pb.p00;
-                    data_cpb[1] = dist_pb.p01;
-                    data_cpb[2] = dist_pb.p10;
-                    data_cpb[3] = dist_pb.p11;
-                }
+
+    let mut rng = thread_rng();
+
+    let iter =
+        data.outer_iter_mut();
+    for mut data_c in iter {
+
+        let unis_init: Vec<UniLayer> =
+            (0..T)
+            .map(|t| UniLayer::gen(t % 2 == 1, &mut rng))
+            .collect();
+        let unis_targ: Vec<UniLayer> =
+            (0..DT)
+            .map(|t| UniLayer::gen((T + t) % 2 == 1, &mut rng))
+            .collect();
+        let meas_init_p: Vec<Vec<MeasLayer>> =
+            P_MEAS.iter().copied()
+            .map(|p| (0..T).map(|_| MeasLayer::gen(p, &mut rng)).collect())
+            .collect();
+        let meas_targ_p: Vec<Vec<MeasLayer>> =
+            P_MEAS.iter().copied()
+            .map(|p| (0..DT).map(|_| MeasLayer::gen(p, &mut rng)).collect())
+            .collect();
+
+        let iter =
+            meas_init_p.iter()
+            .zip(&meas_targ_p)
+            .zip(data_c.outer_iter_mut());
+        for ((meas_init, meas_targ), mut data_cp) in iter {
+
+            let iter =
+                BONDS.iter().copied()
+                .zip(data_cp.outer_iter_mut());
+            for (mb_chi, mut data_cpb) in iter {
+
+                let mb_bond = mb_chi.map(BondDim::Const);
+                let avg =
+                    compute_bond_avg(
+                        mb_bond,
+                        (&unis_init, meas_init),
+                        (&unis_targ, meas_targ),
+                        TARGET_X,
+                        RUNS,
+                    );
+
+                data_cpb[0] = avg.p00;
+                data_cpb[1] = avg.p01;
+                data_cpb[2] = avg.p10;
+                data_cpb[3] = avg.p11;
+
                 unsafe {
                     COUNTER += 1;
                     eprint!("\r  {} / {} ", COUNTER, counter_total);
                 }
             }
-        });
+        }
+    }
     eprintln!();
 
     let outdir = PathBuf::from("output");
-    let fname = format!("fixed_conserv_exact_n={}_d={}_mc={}.npz", N, 2 * N, CIRCS);
+    let fname = format!("naive_n={}_d={}_circs={}_runs={}.npz", N, 2 * N, CIRCS, RUNS);
     println!("{}", fname);
     write_npz!(
         outdir.join(fname),
