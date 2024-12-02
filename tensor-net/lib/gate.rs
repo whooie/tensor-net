@@ -1,6 +1,7 @@
 //! Definitions of common one- and two-qubit gates for use with
 //! [`MPS`][crate::mps::MPS] and [`MPSCircuit`][crate::circuit::MPSCircuit].
 
+use itertools::Itertools;
 use ndarray as nd;
 use ndarray_linalg::QRSquareInplace;
 use num_complex::{ ComplexFloat, Complex64 as C64 };
@@ -813,5 +814,418 @@ where
             z_j.map_inplace(|zij| { *zij = *zij / renorm; });
         });
     z
+}
+
+/// Description of a single Clifford gate for a register of qubits.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum CliffGate {
+    /// Hadamard
+    H(usize),
+    /// π rotation about X
+    X(usize),
+    /// π rotation about Y
+    Y(usize),
+    /// π rotation about Z
+    Z(usize),
+    /// π/2 rotation about Z
+    S(usize),
+    /// -π/2 rotation about Z
+    SInv(usize),
+    /// Z-controlled π rotation about X.
+    ///
+    /// The first qubit index is the control.
+    CX(usize, usize),
+    /// Z-controlled π rotation about Z.
+    ///
+    /// The first qubit index is the control.
+    CZ(usize, usize),
+    /// Swap
+    Swap(usize, usize),
+}
+
+impl CliffGate {
+    /// Return `true` if `self` is `H`.
+    pub fn is_h(&self) -> bool { matches!(self, Self::H(..)) }
+
+    /// Return `true` if `self` is `X`.
+    pub fn is_x(&self) -> bool { matches!(self, Self::X(..)) }
+
+    /// Return `true` if `self` is `Y`.
+    pub fn is_y(&self) -> bool { matches!(self, Self::Y(..)) }
+
+    /// Return `true` if `self` is `Z`.
+    pub fn is_z(&self) -> bool { matches!(self, Self::Z(..)) }
+
+    /// Return `true` if `self` is `S`.
+    pub fn is_s(&self) -> bool { matches!(self, Self::S(..)) }
+
+    /// Return `true` if `self` is `SInv`.
+    pub fn is_sinv(&self) -> bool { matches!(self, Self::SInv(..)) }
+
+    /// Return `true` if `self` is `CX`.
+    pub fn is_cx(&self) -> bool { matches!(self, Self::CX(..)) }
+
+    /// Return `true` if `self` is `CZ`.
+    pub fn is_cz(&self) -> bool { matches!(self, Self::CZ(..)) }
+
+    /// Return `true` if `self` is `Swap`.
+    pub fn is_swap(&self) -> bool { matches!(self, Self::Swap(..)) }
+
+    /// Return `true` if `self` and `other` are inverses.
+    pub fn is_inv(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::H(a), Self::H(b)) if a == b => true,
+            (Self::X(a), Self::X(b)) if a == b => true,
+            (Self::Y(a), Self::Y(b)) if a == b => true,
+            (Self::Z(a), Self::Z(b)) if a == b => true,
+            (Self::S(a), Self::SInv(b)) if a == b => true,
+            (Self::CX(ca, ta), Self::CX(cb, tb)) if ca == cb && ta == tb => true,
+            (Self::CZ(ca, ta), Self::CZ(cb, tb))
+                if (ca == cb && ta == tb) || (ca == tb && cb == ta) => true,
+            (Self::Swap(aa, ba), Self::Swap(ab, bb))
+                if (aa == ba && ab == bb) || (aa == bb && ab == ba) => true,
+            _ => false,
+        }
+    }
+
+}
+
+// A single-qubit Pauli operator.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Pauli {
+    /// Identity
+    I,
+    /// σ<sub>*x*</sub>
+    X,
+    /// σ<sub>*y*</sub>
+    Y,
+    /// σ<sub>*z*</sub>
+    Z,
+}
+
+impl Pauli {
+    fn gen<R>(rng: &mut R) -> Self
+    where R: Rng + ?Sized
+    {
+        match rng.gen_range(0..4_usize) {
+            0 => Self::I,
+            1 => Self::X,
+            2 => Self::Y,
+            3 => Self::Z,
+            _ => unreachable!(),
+        }
+    }
+
+    fn commutes_with(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::I, _) | (_, Self::I) => true,
+            (l, r) => l == r,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NPauli(bool, Vec<Pauli>);
+
+impl NPauli {
+    fn gen<R>(n: usize, rng: &mut R) -> Self
+    where R: Rng + ?Sized
+    {
+        Self(rng.gen(), (0..n).map(|_| Pauli::gen(rng)).collect())
+    }
+
+    fn commutes_with(&self, other: &Self, skip: Option<usize>) -> bool {
+        if self.1.len() != other.1.len() { panic!(); }
+        self.1.iter().zip(&other.1)
+            .skip(skip.unwrap_or(0))
+            .filter(|(l, r)| !l.commutes_with(r))
+            .count() % 2 == 0
+    }
+
+    fn sample_anticomm<R>(&self, skip: Option<usize>, rng: &mut R) -> Self
+    where R: Rng + ?Sized
+    {
+        let n = self.1.len();
+        let mut other: Self;
+        loop {
+            other = Self::gen(n, rng);
+            if !self.commutes_with(&other, skip) {
+                return other;
+            }
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct Col { a: bool, b: bool }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Tableau {
+    n: usize,
+    x: Vec<Col>,
+    z: Vec<Col>,
+    s: Col,
+    gates: Vec<CliffGate>,
+}
+
+impl Tableau {
+    fn new(n: usize) -> Self {
+        Self {
+            n,
+            x: vec![Col { a: false, b: false }; n],
+            z: vec![Col { a: false, b: false }; n],
+            s: Col { a: false, b: false },
+            gates: Vec::new(),
+        }
+    }
+
+    fn set(&mut self, a: &NPauli, b: &NPauli) {
+        assert_eq!(a.1.len(), b.1.len());
+        assert_eq!(self.n, a.1.len());
+        self.x.iter_mut().zip(self.z.iter_mut())
+            .zip(a.1.iter().zip(b.1.iter()))
+            .for_each(|((xj, zj), (aj, bj))| {
+                match aj {
+                    Pauli::I => { xj.a = false; zj.a = false; },
+                    Pauli::X => { xj.a = true;  zj.a = false; },
+                    Pauli::Y => { xj.a = true;  zj.a = true;  },
+                    Pauli::Z => { xj.a = false; zj.a = true;  },
+                }
+                match bj {
+                    Pauli::I => { xj.b = false; zj.b = false; },
+                    Pauli::X => { xj.b = true;  zj.b = false; },
+                    Pauli::Y => { xj.b = true;  zj.b = true;  },
+                    Pauli::Z => { xj.b = false; zj.b = true;  },
+                }
+            });
+        self.s.a = a.0;
+        self.s.b = b.0;
+    }
+
+    fn h(&mut self, k: usize) {
+        let xk = &mut self.x[k];
+        let zk = &mut self.z[k];
+        std::mem::swap(xk, zk);
+        self.s.a ^= xk.a && zk.a;
+        self.s.b ^= xk.b && zk.b;
+        self.gates.push(CliffGate::H(k));
+    }
+
+    fn s(&mut self, k: usize) {
+        let xk = &mut self.x[k];
+        let zk = &mut self.z[k];
+        self.s.a ^= xk.a && zk.a;
+        self.s.b ^= xk.b && zk.b;
+        zk.a ^= xk.a;
+        zk.b ^= xk.b;
+        self.gates.push(CliffGate::S(k));
+    }
+
+    fn cnot(&mut self, c: usize, j: usize) {
+        self.x[j].a ^= self.x[c].a;
+        self.x[j].b ^= self.x[c].b;
+        self.z[c].a ^= self.z[j].a;
+        self.z[c].b ^= self.z[j].b;
+        self.s.a ^= self.x[c].a && self.z[j].a &&  self.x[j].a &&  self.z[c].a;
+        self.s.a ^= self.x[c].a && self.z[j].a && !self.x[j].a && !self.z[c].a;
+        self.s.b ^= self.x[c].b && self.z[j].b &&  self.x[j].b &&  self.z[c].b;
+        self.s.b ^= self.x[c].b && self.z[j].b && !self.x[j].b && !self.z[c].b;
+        self.gates.push(CliffGate::CX(c, j));
+    }
+
+    fn swap(&mut self, a: usize, b: usize) {
+        self.x.swap(a, b);
+        self.z.swap(a, b);
+        self.gates.push(CliffGate::Swap(a, b));
+    }
+
+    fn iter_xz(&self) -> impl Iterator<Item = (&Col, &Col)> + '_ {
+        self.x.iter().zip(self.z.iter())
+    }
+
+    fn iter_xz_mut(&mut self) -> impl Iterator<Item = (&mut Col, &mut Col)> + '_ {
+        self.x.iter_mut().zip(self.z.iter_mut())
+    }
+
+    fn sweep(&mut self, llim: usize) {
+        let mut idx_scratch: Vec<usize> = Vec::with_capacity(self.n - llim);
+        macro_rules! step_12 {
+            ( $tab:ident, $llim:ident, $idx_scratch:ident, $row:ident )
+            => {
+                // (1)
+                // clear top row of z: H
+                $tab.iter_xz().enumerate().skip($llim)
+                    .filter(|(_, (txj, tzj))| tzj.$row && !txj.$row)
+                    .for_each(|(j, _)| { $idx_scratch.push(j); });
+                $idx_scratch.drain(..)
+                    .for_each(|j| { $tab.h(j); });
+                // clear top row of z: S
+                $tab.iter_xz().enumerate().skip($llim)
+                    .filter(|(_, (txj, tzj))| tzj.$row && txj.$row)
+                    .for_each(|(j, _)| { $idx_scratch.push(j); });
+                $idx_scratch.drain(..)
+                    .for_each(|j| { $tab.s(j); });
+
+                // (2)
+                // clear top row of x, all but one: CNOTs
+                $tab.iter_xz().enumerate().skip($llim)
+                    .filter(|(_, (txj, _))| txj.$row) // guaranteed at least 1 such
+                    .for_each(|(j, _)| { $idx_scratch.push(j); });
+                while $idx_scratch.len() > 1 {
+                    $idx_scratch
+                        = $idx_scratch.into_iter()
+                        .chunks(2).into_iter()
+                        .map(|mut chunk| {
+                            let Some(a)
+                                = chunk.next() else { unreachable!() };
+                            if let Some(b) = chunk.next() {
+                                $tab.cnot(a, b);
+                            }
+                            a
+                        })
+                        .collect();
+                }
+            }
+        }
+        step_12!(self, llim, idx_scratch, a);
+
+        // (3)
+        // move the remaining x in the top row to the leftmost column
+        if let Some(j) = idx_scratch.first() {
+            if *j != llim { self.swap(*j, llim); }
+            idx_scratch.pop();
+        }
+
+        // (4)
+        // apply a hadamard if p1 != Z1.I.I...
+        if !self.z[llim].b
+            || self.x[llim].b
+            || self.iter_xz().skip(llim + 1).any(|(txj, tzj)| txj.b || tzj.b)
+        {
+            self.h(llim);
+            // repeat (1) and (2) above for the bottom row
+            step_12!(self, llim, idx_scratch, b);
+            self.h(llim);
+        }
+
+        // (5)
+        // clear signs
+        match self.s {
+            Col { a: false, b: false } => { },
+            Col { a: false, b: true  } => { self.gates.push(CliffGate::X(llim)); },
+            Col { a: true,  b: true  } => { self.gates.push(CliffGate::Y(llim)); },
+            Col { a: true,  b: false } => { self.gates.push(CliffGate::Z(llim)); },
+        }
+    }
+}
+
+/// A series of [`CliffGate`]s implementing an element of the *N*-qubit Clifford
+/// group.
+///
+/// All gates sourced from this type are guaranteed to apply to qubit indices
+/// less than the output of [`Clifford::n`], and all two-qubit gate indices are
+/// guaranteed to be non-equal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Clifford {
+    n: usize,
+    gates: Vec<CliffGate>,
+}
+
+impl IntoIterator for Clifford {
+    type Item = CliffGate;
+    type IntoIter = <Vec<CliffGate> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter { self.gates.into_iter() }
+}
+
+impl<'a> IntoIterator for &'a Clifford {
+    type Item = &'a CliffGate;
+    type IntoIter = <&'a Vec<CliffGate> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter { self.gates.iter() }
+}
+
+impl Clifford {
+    /// Convert a series of gates to a new `n`-qubit Clifford element, verifying
+    /// that all qubit indices are less than `n` and that all two-qubit gate
+    /// indices are non-equal.
+    ///
+    /// If the above conditions do not hold, all gates are returned in a new
+    /// vector as `Err`.
+    pub fn new<I>(n: usize, gates: I) -> Result<Self, Vec<CliffGate>>
+    where I: IntoIterator<Item = CliffGate>
+    {
+        let gates: Vec<CliffGate> = gates.into_iter().collect();
+        if gates.iter()
+            .all(|gate| {
+                match gate {
+                    CliffGate::H(k)
+                    | CliffGate::X(k)
+                    | CliffGate::Y(k)
+                    | CliffGate::Z(k)
+                    | CliffGate::S(k)
+                    | CliffGate::SInv(k)
+                    => *k < n,
+                    CliffGate::CX(a, b)
+                    | CliffGate::CZ(a, b)
+                    | CliffGate::Swap(a, b)
+                    => *a < n && *b < n && a != b,
+                }
+            })
+        {
+            Ok(Self { n, gates })
+        } else {
+            Err(gates)
+        }
+    }
+
+    /// Return the number of qubits.
+    pub fn n(&self) -> usize { self.n }
+
+    /// Return the number of gates.
+    pub fn len(&self) -> usize { self.gates.len() }
+
+    /// Return `true` if the number of gates is zero.
+    pub fn is_empty(&self) -> bool { self.gates.is_empty() }
+
+    /// Return an iterator over the gates implementing the Clifford group
+    /// element.
+    pub fn iter(&self) -> std::slice::Iter<'_, CliffGate> { self.gates.iter() }
+
+    pub fn unpack(self) -> (Vec<CliffGate>, usize) { (self.gates, self.n) }
+
+    pub fn gen<R>(n: usize, rng: &mut R) -> Self
+    where R: Rng + ?Sized
+    {
+        let mut stab_a: NPauli;
+        let mut stab_b: NPauli;
+        let mut tab = Tableau::new(n);
+        for llim in 0..n {
+            stab_a = NPauli::gen(n, rng);
+            while stab_a.1.iter().skip(llim).all(|p| *p == Pauli::I) {
+                stab_a = NPauli::gen(n, rng);
+            }
+            stab_b = stab_a.sample_anticomm(Some(llim), rng);
+            tab.set(&stab_a, &stab_b);
+            tab.sweep(llim);
+        }
+        Self { n, gates: reduce(tab.gates) }
+    }
+}
+
+fn reduce(gates: Vec<CliffGate>) -> Vec<CliffGate> {
+    let mut reduced: Vec<CliffGate> = Vec::with_capacity(gates.len());
+    for gate in gates.into_iter() {
+        if let Some(g) = reduced.last() {
+            if g.is_inv(&gate) {
+                reduced.pop();
+            } else {
+                reduced.push(gate);
+            }
+        } else {
+            reduced.push(gate);
+        }
+    }
+    reduced
 }
 

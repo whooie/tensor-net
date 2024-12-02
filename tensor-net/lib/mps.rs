@@ -1452,6 +1452,31 @@ where
         self.local_renormalize(k + 1);
         Ok(self)
     }
+
+    /// Like [`apply_unitary2`][Self::apply_unitary2], but for a series of
+    /// operators applied to the same two qubits.
+    ///
+    /// No operation is performed if any operator has invalid shape.
+    pub fn apply_unitary2_multi<'a, I>(&mut self, k: usize, ops: I)
+        -> MPSResult<&mut Self>
+    where I: IntoIterator<Item = &'a nd::Array2<A>>
+    {
+        if self.n == 1 || k >= self.n - 1 { return Ok(self); }
+        let shk = self.data[k].dim();
+        let shkp1 = self.data[k + 1].dim();
+        let shape_expected = [shk.1 * shkp1.1, shk.1 * shkp1.1];
+        let op: nd::Array2<A> =
+            ops.into_iter()
+            .try_fold(
+                nd::Array2::eye(shk.1 * shkp1.1),
+                |acc, op| {
+                    (op.shape() == shape_expected)
+                        .then(|| op.dot(&acc))
+                        .ok_or(OperatorIncompatibleShape)
+                }
+            )?;
+        self.apply_unitary2(k, &op)
+    }
 }
 
 impl<T, A> MPS<T, A>
