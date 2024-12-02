@@ -7,8 +7,11 @@ FS = pd.pp.rcParams["figure.figsize"]
 
 outdir = Path("output")
 # infile = outdir.joinpath("naive_n=12_d=24_circs=50_avg=4000.npz")
-infile = outdir.joinpath("naive_n=10_d=20_circs=50_avg=10000.npz")
+# infile = outdir.joinpath("naive_n=10_d=20_circs=50_avg=10000.npz")
 # infile = outdir.joinpath("naive_n=10_d=20_circs=50_runs=2000.npz")
+# infile = outdir.joinpath("naive_n=10_d=20_circs=20_runs=500.npz")
+# infile = outdir.joinpath("naive_n=20_d=40_circs=20_runs=500.npz")
+infile = outdir.joinpath("naive_n=10_d=20_circs=50_runs=500.npz")
 data = np.load(str(infile))
 
 size = int(data["size"][0])
@@ -30,7 +33,7 @@ def kl(p: np.ndarray[float, 1], q: np.ndarray[float, 1]) -> float:
     assert p.shape == q.shape, \
         f"kl: incompatible array shapes {p.shape}, {q.shape}"
     return sum(
-        pk * (np.log(pk) - np.log(qk))
+        pk * np.log(pk / qk)
         for (pk, qk) in zip(p, q)
         if pk > 0 and qk > 0
     )
@@ -70,6 +73,7 @@ P = pd.Plotter.new(
     as_plotarray=True,
 )
 for (x, kl_x) in zip(chi[k_c], data_kl):
+    # print(kl_x)
     P[0].semilogy(p_meas, kl_x, marker=".", linestyle="-", label=f"$\\chi = {x}$")
 P[0] \
     .ggrid() \
