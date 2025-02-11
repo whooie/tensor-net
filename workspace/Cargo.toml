@@ -16,6 +16,7 @@ rand = "0.8.5"
 rayon = "1.10.0"
 tensor-net = { path = "../tensor-net", version = "*" }
 clifford-sim = { path = "/home/whooie/Documents/UIUC/01clifford_sim/clifford_sim", version = "*" }
+nalgebra = "0.33.2"
 
 [dependencies.whooie]
 git = "https://gitlab.com/whooie/rust-lib.git"
@@ -81,6 +82,14 @@ name = "clifford"
 [[bin]]
 path = "src/clifford_testing.rs"
 name = "clifford_testing"
+
+[[bin]]
+path = "src/haar_mixing.rs"
+name = "haar_mixing"
+
+[[bin]]
+path = "src/clifford_mixing.rs"
+name = "clifford_mixing"
 
 [profile.release]
 lto = true

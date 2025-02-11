@@ -16,20 +16,18 @@ use tensor_net::{
 };
 use whooie::write_npz;
 
-const N: usize = 10;
+const N: usize = 14;
 const T: usize = 2 * N;
 const DT: usize = 2;
 const TARGET_X: (usize, usize) = (N / 2, N / 2);
 const CIRCS: usize = 50;
-const RUNS: usize = 500;
+const RUNS: usize = 5000;
 const P_MEAS: &[f64] = &[
-    0.050, 0.100, 0.150, 0.200, 0.250,
-
-    // 0.020, 0.030, 0.040, 0.050, 0.070, 0.090,
-    // 0.100, 0.115, 0.130, 0.140, 0.150, 0.160, 0.170, 0.180, 0.190,
-    // 0.210, 0.225, 0.250, 0.275,
-    // 0.300, 0.325, 0.350, 0.375,
-    // 0.400,
+    0.010, 0.020, 0.030, 0.040, 0.050, 0.070, 0.090,
+    0.100, 0.115, 0.130, 0.140, 0.150, 0.160, 0.170, 0.180, 0.190,
+    0.210, 0.225, 0.250, 0.275,
+    0.300, 0.325, 0.350, 0.375,
+    0.400,
 ];
 const BONDS: &[Option<usize>] = &[
     None, Some(4), Some(8), Some(16), Some(32),
@@ -582,7 +580,7 @@ fn main() {
     eprintln!();
 
     let outdir = PathBuf::from("output");
-    let fname = format!("naive_n={}_d={}_circs={}_runs={}.npz", N, 2 * N, CIRCS, RUNS);
+    let fname = format!("clifford_n={}_d={}_circs={}_runs={}.npz", N, 2 * N, CIRCS, RUNS);
     println!("{}", fname);
     write_npz!(
         outdir.join(fname),

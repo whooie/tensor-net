@@ -11,7 +11,20 @@ outdir = Path("output")
 # infile = outdir.joinpath("naive_n=10_d=20_circs=50_runs=2000.npz")
 # infile = outdir.joinpath("naive_n=10_d=20_circs=20_runs=500.npz")
 # infile = outdir.joinpath("naive_n=20_d=40_circs=20_runs=500.npz")
-infile = outdir.joinpath("naive_n=10_d=20_circs=50_runs=500.npz")
+# infile = outdir.joinpath("naive_n=10_d=20_circs=50_runs=500.npz")
+# infile = outdir.joinpath("clifford_n=30_d=60_circs=50_runs=500.npz")
+# infile = outdir.joinpath("clifford_n=12_d=24_circs=50_runs=4000.npz")
+
+# infile = outdir.joinpath("clifford_n=6_d=12_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("haar_n=6_d=12_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("clifford_n=8_d=16_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("haar_n=8_d=16_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("clifford_n=10_d=20_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("haar_n=10_d=20_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("clifford_n=12_d=24_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("haar_n=12_d=24_circs=50_runs=5000.npz")
+infile = outdir.joinpath("clifford_n=14_d=28_circs=50_runs=5000.npz")
+# infile = outdir.joinpath("haar_n=14_d=28_circs=50_runs=5000.npz")
 data = np.load(str(infile))
 
 size = int(data["size"][0])
@@ -85,6 +98,7 @@ P[0] \
         framealpha=1.0,
     ) \
     .set_ylabel("$\\mathregular{KL}(C_\\chi || Q)$")
+    # .set_ylim(1e-7, 2e-2)
 for (x, sh_x) in zip(chi[k_c], data_sh[k_c]):
     P[1].plot(p_meas, np.log(4) - sh_x, marker=".", linestyle="-", label=f"$\\chi = {x}$")
 P[1] \
@@ -99,7 +113,8 @@ P[1] \
     ) \
     .set_ylabel("$\\log 4 - H(P_\\chi)$")
 for (x, sh_x) in zip(chi[k_c], data_sh[k_c]):
-    P[2].semilogy(p_meas, abs(sh_x - data_sh[k_q]), marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    # P[2].semilogy(p_meas, abs(sh_x - data_sh[k_q]), marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    P[2].semilogy(p_meas, (np.log(4) - sh_x) / (np.log(4) - data_sh[k_q]), marker=".", linestyle="-", label=f"$\\chi = {x}$")
 P[2] \
     .ggrid() \
     .legend(
@@ -109,7 +124,10 @@ P[2] \
         bbox_to_anchor=(1.0, 1.0),
         framealpha=1.0,
     ) \
-    .set_ylabel("$|H(C_\\chi) - H(Q)|$") \
+    .set_ylabel(
+        # "$|H(C_\\chi) - H(Q)|$"
+        "$\\frac{\\log 4 - H(C_\\chi)}{\\log 4 - H(Q)}$"
+    ) \
     .set_xlabel("$p$")
 P \
     .suptitle(
@@ -190,6 +208,77 @@ P \
     ) \
     .savefig(infile.with_stem(infile.stem + "_hist").with_suffix(".png")) \
     .close()
+num_single_circ: int = 5
+probs_circ = P_qc[:num_single_circ].swapaxes(1, 2) # :: { circ, chi, p, dist }
+for (c, probs_c) in enumerate(probs_circ):
+    P = pd.Plotter.new(
+        nrows=4,
+        sharex=True,
+        figsize=[FS[0], 1.5 * FS[1]],
+        as_plotarray=True,
+    )
+    for (x, p00) in zip(chi[k_c], probs_c[k_c, :, 0]):
+        P[0].plot(p_meas, p00, marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    P[0] \
+        .plot(p_meas, probs_c[k_q, :, 0], marker=".", linestyle="-", color="k", label="$\\chi = \\infty$") \
+        .ggrid() \
+        .legend(
+            fontsize="xx-small",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.0, 1.0),
+            framealpha=1.0,
+        ) \
+        .set_ylabel("$P_\\chi(00)$")
+    for (x, p01) in zip(chi[k_c], probs_c[k_c, :, 1]):
+        P[1].plot(p_meas, p01, marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    P[1] \
+        .plot(p_meas, probs_c[k_q, :, 1], marker=".", linestyle="-", color="k", label="$\\chi = \\infty$") \
+        .ggrid() \
+        .legend(
+            fontsize="xx-small",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.0, 1.0),
+            framealpha=1.0,
+        ) \
+        .set_ylabel("$P_\\chi(01)$")
+    for (x, p10) in zip(chi[k_c], probs_c[k_c, :, 2]):
+        P[2].plot(p_meas, p10, marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    P[2] \
+        .plot(p_meas, probs_c[k_q, :, 2], marker=".", linestyle="-", color="k", label="$\\chi = \\infty$") \
+        .ggrid() \
+        .legend(
+            fontsize="xx-small",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.0, 1.0),
+            framealpha=1.0,
+        ) \
+        .set_ylabel("$P_\\chi(10)$")
+    for (x, p11) in zip(chi[k_c], probs_c[k_c, :, 3]):
+        P[3].plot(p_meas, p11, marker=".", linestyle="-", label=f"$\\chi = {x}$")
+    P[3] \
+        .plot(p_meas, probs_c[k_q, :, 3], marker=".", linestyle="-", color="k", label="$\\chi = \\infty$") \
+        .ggrid() \
+        .legend(
+            fontsize="xx-small",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.0, 1.0),
+            framealpha=1.0,
+        ) \
+        .set_ylabel("$P_\\chi(11)$") \
+        .set_xlabel("$p$")
+    P \
+        .suptitle(
+
+            f"$\\mathregular{{circ}} = {c}; \\mathregular{{size}} = {size}; \\mathregular{{depth}} = {depth}$\n"
+            f"$\\Delta t = {dt}; x_0 = {target_x[0]}; x_1 = {target_x[1]}$",
+            fontsize="small",
+        ) \
+        .savefig(infile.with_stem(infile.stem + f"_{c=}_hist").with_suffix(".png")) \
+        .close()
 
 P = pd.Plotter.new(
     nrows=4,
