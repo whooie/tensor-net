@@ -219,7 +219,7 @@ where R: Rng + ?Sized
     meas.0.iter()
         .filter(|k| !target.is_some_and(|j| j == **k))
         .for_each(|k| { state.measure(*k, rng); });
-    target.map(|k| state.probs(k))
+    target.map(|k| state.probs(k).into())
 }
 
 #[derive(Copy, Clone, Debug)]

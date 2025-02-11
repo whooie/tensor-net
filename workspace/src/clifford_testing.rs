@@ -178,7 +178,7 @@ fn check_probs(mps: &MPS<Q, C64>, stab: &mut Stab, n: usize) -> bool {
     for j in 0..n {
         let mps_probs = mps.prob(j, 0).zip(mps.prob(j, 1)).unwrap();
         let stab_probs = stab.probs(j);
-        if !probs_approx_eq(mps_probs, stab_probs) {
+        if !probs_approx_eq(mps_probs, stab_probs.into()) {
             println!("{} {:.3?} {:.3?}", j, mps_probs, stab_probs);
             let mps_arr = mps.contract();
             for (k, ak) in mps_arr.iter().enumerate() {
