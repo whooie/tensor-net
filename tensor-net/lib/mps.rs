@@ -1703,10 +1703,11 @@ where
 
     /// Convert to an unevaluated [`Network`] representing a contiguous subset
     /// of particles, with the remainder traced over.
-    pub fn into_network_part(self, part: Range<usize>)
+    pub fn into_network_part(self, mut part: Range<usize>)
         -> Network<MPSMatIndex<T>, A>
     {
         let Self { data, outs, svals, n, .. } = self;
+        part.end = part.end.min(n);
         let mut network: Network<MPSMatIndex<T>, A> = Network::new();
         for (k, (datak, idxk)) in data.into_iter().zip(outs).enumerate() {
             if !part.contains(&k) { continue; }
@@ -1739,7 +1740,7 @@ where
             }
         }
         for (k, sk) in svals.iter().enumerate() {
-            if part.contains(&k) || part.contains(&(k + 1)) {
+            if part.contains(&k) && part.contains(&(k + 1)) {
                 let d = sk.len();
                 let mut data = nd::Array::zeros((d, d));
                 data.diag_mut().iter_mut()
@@ -1753,41 +1754,43 @@ where
                 network.push(data).unwrap();
             }
         }
+        unsafe {
+            let conj_nodes: Vec<_> =
+                network.nodes()
+                .map(|(_, tens)| tens.conj().map_indices(MPSMatIndex::conj))
+                .collect();
+            conj_nodes.into_iter()
+                .for_each(|tens| { network.push(tens).unwrap(); });
+        }
         if part.start != 0 {
             let k = part.start - 1;
             let d = svals[k].len();
-            let uket = MPSMatIndex::BondLKet { label: k, dim: d };
-            let ubra = MPSMatIndex::BondLBra { label: k, dim: d };
+            let mut data = nd::Array::zeros((d, d));
+            data.diag_mut().iter_mut()
+                .zip(&svals[k])
+                .for_each(|(dj, skj)| { *dj = A::from_re(*skj * *skj); });
+            let uket = MPSMatIndex::BondRKet { label: k, dim: d };
+            let ubra = MPSMatIndex::BondRBra { label: k, dim: d };
             let tracer = unsafe {
-                Tensor::from_array_unchecked(
-                    [uket, ubra],
-                    nd::array![[A::one(), A::zero()], [A::zero(), A::one()]],
-                )
+                Tensor::from_array_unchecked([uket, ubra], data)
             };
             network.push(tracer).unwrap();
         }
         if part.end != n {
             let k = part.end - 1;
             let d = svals[k].len();
-            let vket = MPSMatIndex::BondRKet { label: k, dim: d };
-            let vbra = MPSMatIndex::BondRBra { label: k, dim: d };
+            let mut data = nd::Array::zeros((d, d));
+            data.diag_mut().iter_mut()
+                .zip(&svals[k])
+                .for_each(|(dj, skj)| { *dj = A::from_re(*skj * *skj); });
+            let vket = MPSMatIndex::BondLKet { label: k, dim: d };
+            let vbra = MPSMatIndex::BondLBra { label: k, dim: d };
             let tracer = unsafe {
-                Tensor::from_array_unchecked(
-                    [vket, vbra],
-                    nd::array![[A::one(), A::zero()], [A::zero(), A::one()]],
-                )
+                Tensor::from_array_unchecked([vket, vbra], data)
             };
             network.push(tracer).unwrap();
         }
-        unsafe {
-            let conj_nodes: Vec<_>
-                = network.nodes()
-                .map(|(_, tens)| tens.conj().map_indices(MPSMatIndex::conj))
-                .collect();
-            conj_nodes.into_iter()
-                .for_each(|tens| { network.push(tens).unwrap(); });
-            network
-        }
+        network
     }
 }
 
@@ -1843,6 +1846,7 @@ where
         let (indices, data) = rho_tens.into_flat();
         let sidelen: usize
             = indices.iter()
+            .take(indices.len() / 2)
             .map(|idx| idx.dim())
             .product();
         let rho: nd::Array2<A>
@@ -1854,6 +1858,52 @@ where
         //     = data.reshape((sidelen, sidelen))
         //     .into_owned();
         entropy_ry(&rho, a)
+    }
+}
+
+impl<T, A> MPS<T, A>
+where
+    T: Idx + Ord,
+    A: ComplexLinalgScalar,
+{
+    /// Contract the MPS and convert to a single, bare density matrix in the
+    /// standard basis.
+    pub fn into_matrix(self) -> (Vec<MatIndex<T>>, nd::Array2<A>) {
+        let mut tens = self.into_tensor_density();
+        tens.sort_indices();
+        let (indices, data) = tens.into_flat();
+        let sidelen: usize =
+            indices.iter()
+            .take(indices.len() / 2)
+            .map(|idx| idx.dim())
+            .product();
+        let rho: nd::Array2<A> =
+            data.as_standard_layout()
+            .into_shape((sidelen, sidelen))
+            .unwrap()
+            .into_owned();
+        (indices, rho)
+    }
+
+    /// Contract the MPS and convert to a single, bare density matrix
+    /// representing the partial trace of the state in the standard basis.
+    pub fn into_matrix_part(self, part: Range<usize>)
+        -> (Vec<MatIndex<T>>, nd::Array2<A>)
+    {
+        let mut tens = self.into_tensor_part(part);
+        tens.sort_indices();
+        let (indices, data) = tens.into_flat();
+        let sidelen: usize =
+            indices.iter()
+            .take(indices.len() / 2)
+            .map(|idx| idx.dim())
+            .product();
+        let rho: nd::Array2<A> =
+            data.as_standard_layout()
+            .into_shape((sidelen, sidelen))
+            .unwrap()
+            .into_owned();
+        (indices, rho)
     }
 }
 
