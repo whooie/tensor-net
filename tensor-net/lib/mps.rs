@@ -57,13 +57,13 @@
 //!     fn label(&self) -> String { format!("{self:?}") }
 //! }
 //!
-//! let h: nd::Array2<C64> // hadamard
-//!     = nd::array![
+//! let h: nd::Array2<C64> = // hadamard
+//!     nd::array![
 //!         [C64::from(0.5).sqrt(),  C64::from(0.5).sqrt()],
 //!         [C64::from(0.5).sqrt(), -C64::from(0.5).sqrt()],
 //!     ];
-//! let cx: nd::Array2<C64> // CNOT
-//!     = nd::array![
+//! let cx: nd::Array2<C64> = // CNOT
+//!     nd::array![
 //!         [C64::one(),  C64::zero(), C64::zero(), C64::zero()],
 //!         [C64::zero(), C64::one(),  C64::zero(), C64::zero()],
 //!         [C64::zero(), C64::zero(), C64::zero(), C64::one() ],
@@ -241,18 +241,18 @@ fn process_svd<A>(
 ) -> Schmidt<A>
 where A: ComplexLinalgScalar
 {
-    let mut norm: A::Re
-        = s.iter()
+    let mut norm: A::Re =
+        s.iter()
         .map(|sj| sj.powi(2))
         .fold(A::Re::zero(), A::Re::add)
         .sqrt();
     s.map_inplace(|sj| { *sj /= norm; });
-    let rank
-        = match trunc {
+    let rank =
+        match trunc {
             Some(BondDim::Const(r)) => {
                 let eps = A::Re::epsilon();
-                let n
-                    = s.iter()
+                let n =
+                    s.iter()
                     .take_while(|sj| sj.is_normal() && **sj > eps)
                     .count();
                 r.max(1).min(n)
@@ -375,16 +375,16 @@ where
         if indices.is_empty() { return Err(EmptySystem); }
         if indices.iter().any(|i| i.dim() == 0) { return Err(UnphysicalIndex); }
         let n = indices.len();
-        let data: Vec<nd::Array3<A>>
-            = indices.iter()
+        let data: Vec<nd::Array3<A>> =
+            indices.iter()
             .map(|idx| {
                 let mut g: nd::Array3<A> = nd::Array::zeros((1, idx.dim(), 1));
                 if let Some(g000) = g.first_mut() { *g000 = A::one(); }
                 g
             })
             .collect();
-        let svals: Vec<nd::Array1<A::Re>>
-            = (0..n - 1)
+        let svals: Vec<nd::Array1<A::Re>> =
+            (0..n - 1)
             .map(|_| nd::array![A::Re::one()])
             .collect();
         Ok(Self { n, data, outs: indices, svals, trunc })
@@ -409,20 +409,20 @@ where
             return Err(InvalidQuantumNumber);
         }
         let n = indices.len();
-        let data: Vec<nd::Array3<A>>
-            = indices.iter()
+        let data: Vec<nd::Array3<A>> =
+            indices.iter()
             .map(|(idx, qnum)| {
                 let mut g: nd::Array3<A> = nd::Array::zeros((1, idx.dim(), 1));
                 g[[0, *qnum, 0]] = A::one();
                 g
             })
             .collect();
-        let svals: Vec<nd::Array1<A::Re>>
-            = (0..n - 1)
+        let svals: Vec<nd::Array1<A::Re>> =
+            (0..n - 1)
             .map(|_| nd::array![A::Re::one()])
             .collect();
-        let indices: Vec<T>
-            = indices.into_iter()
+        let indices: Vec<T> =
+            indices.into_iter()
             .map(|(idx, _)| idx)
             .collect();
         Ok(Self { n, data, outs: indices, svals, trunc })
@@ -453,8 +453,8 @@ where
     {
         let n = outs.len(); // assume n ≥ 1
         let mut data: Vec<nd::Array3<A>> = Vec::with_capacity(n);
-        let mut svals: Vec<nd::Array1<A::Re>>
-            = Vec::with_capacity(n - 1);
+        let mut svals: Vec<nd::Array1<A::Re>> =
+            Vec::with_capacity(n - 1);
         let mut udim: usize = 1;
         let mut outdim: usize;
         let mut statelen = state.len();
@@ -478,8 +478,8 @@ where
             // can't slice u in place on the column index because it would mean
             // the remaining data won't be contiguous in memory; this would make
             // the reshape fail
-            let mut g
-                = u.slice(nd::s![.., ..rank]).to_owned()
+            let mut g =
+                u.slice(nd::s![.., ..rank]).to_owned()
                 .into_shape((udim, outdim, rank))
                 .unwrap();
             if let Some(slast) = svals.last() {
@@ -537,8 +537,8 @@ where
         state.map_inplace(|a| { *a /= norm; });
         let n = indices.len();
         if n == 1 {
-            let mut g: nd::Array3<A>
-                = nd::Array::zeros((1, indices[0].dim(), 1));
+            let mut g: nd::Array3<A> =
+                nd::Array::zeros((1, indices[0].dim(), 1));
             state.move_into(g.slice_mut(nd::s![0, .., 0]));
             let data: Vec<nd::Array3<A>> = vec![g];
             let svals: Vec<nd::Array1<A::Re>> = Vec::with_capacity(0);
@@ -632,13 +632,13 @@ where A: ComplexLinalgScalar
     ) -> nd::Array2<A>
     {
         let shl = l.dim();
-        let l
-            = l.as_standard_layout()
+        let l =
+            l.as_standard_layout()
             .into_shape((shl.0 * shl.1, shl.2))
             .unwrap();
         let shr = r.dim();
-        let mut r
-            = r.as_standard_layout()
+        let mut r =
+            r.as_standard_layout()
             .into_shape((shr.0, shr.1 * shr.2))
             .unwrap();
         nd::Zip::from(r.rows_mut())
@@ -846,8 +846,8 @@ where
     fn local_refactor(&mut self, k: usize) {
         let shk = self.data[k].dim();
         let shkp1 = self.data[k + 1].dim();
-        let Schmidt { u, s, q, rank }
-            = self.contract_local2(k).local_decomp(self.trunc);
+        let Schmidt { u, s, q, rank } =
+            self.contract_local2(k).local_decomp(self.trunc);
         let mut gk_new = u.into_shape((shk.0, shk.1, rank)).unwrap();
         if k != 0 {
             nd::Zip::from(gk_new.outer_iter_mut())
@@ -934,86 +934,87 @@ where
         let dk = self.outs[k].dim();
         if op.shape() != [dk, dk] { return Err(OperatorIncompatibleShape); }
         let gk = &self.data[k];
+        // this is pretty ugly, but it's faster than trying to use matmul...
         if k == 0 {
-            // op_{ts} * conj(Γ[k]_{0tw}) * Γ[k]_{0sw} * Λ[k]_{w}
+            // op_{ts} * conj(Γ[k]_{0tw}) * Γ[k]_{0sw} * Λ[k]_{w}^2
             let gk0__ = gk.slice(nd::s![0, .., ..]);
             let lk = &self.svals[k];
-            let ev: A
-                = nd::Zip::from(gk0__.outer_iter())
+            let ev: A =
+                nd::Zip::from(gk0__.outer_iter())
                 .and(op.outer_iter())
                 .fold(A::zero(), |acc, gk0t_, opt_| {
                     nd::Zip::from(gk0__.outer_iter())
-                        .and(opt_)
-                        .fold(A::zero(), |acc, gk0s_, opts| {
-                            nd::Zip::from(gk0t_)
-                                .and(gk0s_)
-                                .and(lk)
-                                .fold(A::zero(), |acc, gk0tw, gk0sw, lkw| {
-                                    gk0tw.conj() * *gk0sw
-                                        * A::from_re(lkw.powi(2))
-                                    + acc
-                                })
-                                * *opts
+                    .and(opt_)
+                    .fold(A::zero(), |acc, gk0s_, opts| {
+                        nd::Zip::from(gk0t_)
+                        .and(gk0s_)
+                        .and(lk)
+                        .fold(A::zero(), |acc, gk0tw, gk0sw, lkw| {
+                            gk0tw.conj() * *gk0sw
+                                * A::from_re(lkw.powi(2))
                             + acc
                         })
+                        * *opts
+                        + acc
+                    })
                     + acc
                 });
             Ok(ev)
         } else if k == self.n - 1 {
-            // Λ[k-1]_{v} * op_{ts} * conj(Γ[k]_{vt0}) * Γ[k]_{vs0}
+            // Λ[k-1]_{v}^2 * op_{ts} * conj(Γ[k]_{vt0}) * Γ[k]_{vs0}
             let gk__0 = gk.slice(nd::s![.., .., 0]);
             let lkm1 = &self.svals[k - 1];
-            let ev: A
-                = nd::Zip::from(gk__0.outer_iter())
+            let ev: A =
+                nd::Zip::from(gk__0.outer_iter())
                 .and(gk__0.outer_iter())
                 .and(lkm1)
                 .fold(A::zero(), |acc, gkv_0p, gkv_0, lkm1v| {
                     nd::Zip::from(gkv_0p)
-                        .and(op.outer_iter())
-                        .fold(A::zero(), |acc, gkvt0, opt_| {
-                            nd::Zip::from(gkv_0)
-                                .and(opt_)
-                                .fold(A::zero(), |acc, gkvs0, opts| {
-                                    A::from_re(lkm1v.powi(2))
-                                        * gkvt0.conj() * *gkvs0
-                                        * *opts
-                                    + acc
-                                })
+                    .and(op.outer_iter())
+                    .fold(A::zero(), |acc, gkvt0, opt_| {
+                        nd::Zip::from(gkv_0)
+                        .and(opt_)
+                        .fold(A::zero(), |acc, gkvs0, opts| {
+                            A::from_re(lkm1v.powi(2))
+                                * gkvt0.conj() * *gkvs0
+                                * *opts
                             + acc
                         })
-                        * A::from_re(lkm1v.powi(2))
+                        + acc
+                    })
+                    * A::from_re(lkm1v.powi(2))
                     + acc
                 });
             Ok(ev)
         } else {
-            // Λ[k-1]_{v} * op_{ts} * conj(Γ[k]_{vtw}) * Γ[k]_{vsw} * Λ[k]_{w}
+            // Λ[k-1]_{v}^2 * op_{ts} * conj(Γ[k]_{vtw}) * Γ[k]_{vsw} * Λ[k]_{w}^2
             let lkm1 = &self.svals[k - 1];
             let lk = &self.svals[k];
-            let ev: A
-                = nd::Zip::from(gk.outer_iter())
+            let ev: A =
+                nd::Zip::from(gk.outer_iter())
                 .and(gk.outer_iter())
                 .and(lkm1)
                 .fold(A::zero(), |acc, gkv__p, gkv__, lkm1v| {
                     nd::Zip::from(gkv__p.outer_iter())
-                        .and(op.outer_iter())
-                        .fold(A::zero(), |acc, gkvt_, opt_| {
-                            nd::Zip::from(gkv__.outer_iter())
-                                .and(opt_)
-                                .fold(A::zero(), |acc, gkvs_, opts| {
-                                    nd::Zip::from(gkvt_)
-                                        .and(gkvs_)
-                                        .and(lk)
-                                        .fold(A::zero(), |acc, gkvtw, gkvsw, lkw| {
-                                            gkvtw.conj() * *gkvsw
-                                                * A::from_re(lkw.powi(2))
-                                            + acc
-                                        })
-                                        * *opts
-                                    + acc
-                                })
+                    .and(op.outer_iter())
+                    .fold(A::zero(), |acc, gkvt_, opt_| {
+                        nd::Zip::from(gkv__.outer_iter())
+                        .and(opt_)
+                        .fold(A::zero(), |acc, gkvs_, opts| {
+                            nd::Zip::from(gkvt_)
+                            .and(gkvs_)
+                            .and(lk)
+                            .fold(A::zero(), |acc, gkvtw, gkvsw, lkw| {
+                                gkvtw.conj() * *gkvsw
+                                    * A::from_re(lkw.powi(2))
+                                + acc
+                            })
+                            * *opts
                             + acc
                         })
-                        * A::from_re(lkm1v.powi(2))
+                        + acc
+                    })
+                    * A::from_re(lkm1v.powi(2))
                     + acc
                 });
             Ok(ev)
@@ -1085,12 +1086,12 @@ where
             gk0__.outer_iter()
                 .map(|gk0s_| {
                     nd::Zip::from(gk0s_)
-                        .and(lk)
-                        .fold(A::Re::zero(), |acc, gk0su, lku| {
-                            (gk0su.conj() * *gk0su).re()
-                                * lku.powi(2)
-                            + acc
-                        })
+                    .and(lk)
+                    .fold(A::Re::zero(), |acc, gk0su, lku| {
+                        (gk0su.conj() * *gk0su).re()
+                            * lku.powi(2)
+                        + acc
+                    })
                 })
                 .collect()
         } else if k == self.n - 1 {
@@ -1099,12 +1100,12 @@ where
             gk__0.axis_iter(nd::Axis(1))
                 .map(|gk_s0| {
                     nd::Zip::from(gk_s0)
-                        .and(lkm1)
-                        .fold(A::Re::zero(), |acc, gkus0, lkm1u| {
-                            (gkus0.conj() * *gkus0).re()
-                                * lkm1u.powi(2)
-                            + acc
-                        })
+                    .and(lkm1)
+                    .fold(A::Re::zero(), |acc, gkus0, lkm1u| {
+                        (gkus0.conj() * *gkus0).re()
+                            * lkm1u.powi(2)
+                        + acc
+                    })
                 })
                 .collect()
         } else {
@@ -1114,18 +1115,18 @@ where
             gk.axis_iter(nd::Axis(1))
                 .map(|gk_s_| {
                     nd::Zip::from(gk_s_.outer_iter())
-                        .and(lkm1)
-                        .fold(A::Re::zero(), |acc, gkvs_, lkm1v| {
-                            nd::Zip::from(gkvs_)
-                                .and(lk)
-                                .fold(A::Re::zero(), |acc, gkvsu, lku| {
-                                    (gkvsu.conj() * *gkvsu).re()
-                                        * lku.powi(2)
-                                    + acc
-                                })
-                                * lkm1v.powi(2)
+                    .and(lkm1)
+                    .fold(A::Re::zero(), |acc, gkvs_, lkm1v| {
+                        nd::Zip::from(gkvs_)
+                        .and(lk)
+                        .fold(A::Re::zero(), |acc, gkvsu, lku| {
+                            (gkvsu.conj() * *gkvsu).re()
+                                * lku.powi(2)
                             + acc
                         })
+                        * lkm1v.powi(2)
+                        + acc
+                    })
                 })
                 .collect()
         }
@@ -1150,12 +1151,12 @@ where
                 gk0__.outer_iter()
                     .map(|gk0s_| {
                         nd::Zip::from(gk0s_)
-                            .and(lk)
-                            .fold(A::zero(), |acc, gk0sw, lkw| {
-                                gk0sw.conj() * *gk0sw
-                                    * A::from_re(lkw.powi(2))
-                                + acc
-                            })
+                        .and(lk)
+                        .fold(A::zero(), |acc, gk0sw, lkw| {
+                            gk0sw.conj() * *gk0sw
+                                * A::from_re(lkw.powi(2))
+                            + acc
+                        })
                     })
                     .fold(A::zero(), A::add)
             )
@@ -1167,9 +1168,9 @@ where
                     .and(lkm1)
                     .fold(A::zero(), |acc, gkv_0, lkm1v| {
                         gkv_0.iter()
-                            .map(|gkvs0| gkvs0.conj() * *gkvs0)
-                            .fold(A::zero(), A::add)
-                            * A::from_re(lkm1v.powi(2))
+                        .map(|gkvs0| gkvs0.conj() * *gkvs0)
+                        .fold(A::zero(), A::add)
+                        * A::from_re(lkm1v.powi(2))
                         + acc
                     })
             )
@@ -1182,17 +1183,17 @@ where
                     .and(lkm1)
                     .fold(A::zero(), |acc, gkv__, lkm1v| {
                         gkv__.outer_iter()
-                            .map(|gkvs_| {
-                                nd::Zip::from(gkvs_)
-                                    .and(lk)
-                                    .fold(A::zero(), |acc, gkvsw, lkw| {
-                                        gkvsw.conj() * *gkvsw
-                                            * A::from_re(lkw.powi(2))
-                                        + acc
-                                    })
+                        .map(|gkvs_| {
+                            nd::Zip::from(gkvs_)
+                            .and(lk)
+                            .fold(A::zero(), |acc, gkvsw, lkw| {
+                                gkvsw.conj() * *gkvsw
+                                    * A::from_re(lkw.powi(2))
+                                + acc
                             })
-                            .fold(A::zero(), A::add)
-                            * A::from_re(lkm1v.powi(2))
+                        })
+                        .fold(A::zero(), A::add)
+                        * A::from_re(lkm1v.powi(2))
                         + acc
                     })
             )
@@ -1250,11 +1251,11 @@ where A: ComplexLinalgScalar
         self.svals.get(b)
             .map(|s| {
                 s.iter().copied()
-                    .map(|sk| {
-                        let sk2 = sk * sk;
-                        -sk2 * sk2.ln()
-                    })
-                    .fold(A::Re::zero(), A::Re::add)
+                .map(|sk| {
+                    let sk2 = sk * sk;
+                    -sk2 * sk2.ln()
+                })
+                .fold(A::Re::zero(), A::Re::add)
             })
     }
 
@@ -1271,10 +1272,10 @@ where A: ComplexLinalgScalar
             self.svals.get(b)
                 .map(|s| {
                     s.iter().copied()
-                        .map(|sk| (sk * sk).powf(a))
-                        .fold(A::Re::zero(), A::Re::add)
-                        .ln()
-                        * (one - a).recip()
+                    .map(|sk| (sk * sk).powf(a))
+                    .fold(A::Re::zero(), A::Re::add)
+                    .ln()
+                    * (one - a).recip()
                 })
         }
     }
@@ -1349,8 +1350,8 @@ where
                 .for_each(|mut qv| { qv.assign(&op.dot(&qv)); });
         }
 
-        let Schmidt { u, s, q, rank }
-            = q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
+        let Schmidt { u, s, q, rank } =
+            q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
             .local_decomp(self.trunc);
         let mut gk_new = u.into_shape((shk.0, shk.1, rank)).unwrap();
         if k != 0 {
@@ -1435,8 +1436,8 @@ where
         //     + A::Re::one() + A::Re::one() + A::Re::one() + A::Re::one()
         //     + A::Re::one() + A::Re::one();
         // assert!((probsum - A::Re::one()).abs() < ten.powi(3) * A::Re::epsilon());
-        let p
-            = probs.iter().copied()
+        let p =
+            probs.iter().copied()
             .scan(A::Re::zero(), |cu, pr| { *cu += pr; Some(*cu) })
             .enumerate()
             .find_map(|(j, cuprob)| (r < cuprob).then_some(j))
@@ -1618,12 +1619,12 @@ where
     /// density matrix.
     pub fn into_network_density(self) -> Network<MPSMatIndex<T>, A> {
         unsafe {
-            let mut net
-                = self.into_network()
+            let mut net =
+                self.into_network()
                 .map_indices(MPSIndex::into_mpsmat)
                 .unwrap();
-            let conj_nodes: Vec<_>
-                = net.nodes()
+            let conj_nodes: Vec<_> =
+                net.nodes()
                 .map(|(_, tens)| tens.conj().map_indices(MPSMatIndex::conj))
                 .collect();
             conj_nodes.into_iter()
@@ -1733,8 +1734,8 @@ where
     /// Contract the MPS and convert to a single [`Tensor`] representing the
     /// pure state.
     pub fn into_tensor(self) -> Tensor<T, A> {
-        let tens
-            = self.into_network()
+        let tens =
+            self.into_network()
             .contract()
             .unwrap();
         unsafe { tens.map_indices(MPSIndex::into_physical) }
@@ -1743,8 +1744,8 @@ where
     /// Contract the MPS and convert to a single [`Tensor`] representing the
     /// pure state as a density matrix.
     pub fn into_tensor_density(self) -> Tensor<MatIndex<T>, A> {
-        let dens
-            = self.into_network_density()
+        let dens =
+            self.into_network_density()
             .contract()
             .unwrap();
         unsafe { dens.map_indices(MPSMatIndex::into_physical) }
@@ -1756,8 +1757,8 @@ where
     /// Particles outside of `part` will be traced over.
     pub fn into_tensor_part(self, part: Range<usize>) -> Tensor<MatIndex<T>, A>
     {
-        let dens
-            = self.into_network_part(part)
+        let dens =
+            self.into_network_part(part)
             .contract()
             .unwrap();
         unsafe { dens.map_indices(MPSMatIndex::into_physical) }
@@ -1775,13 +1776,13 @@ where
         let mut rho_tens = self.clone().into_tensor_part(part);
         rho_tens.sort_indices();
         let (indices, data) = rho_tens.into_flat();
-        let sidelen: usize
-            = indices.iter()
+        let sidelen: usize =
+            indices.iter()
             .take(indices.len() / 2)
             .map(|idx| idx.dim())
             .product();
-        let rho: nd::Array2<A>
-            = data.as_standard_layout()
+        let rho: nd::Array2<A> =
+            data.as_standard_layout()
             .into_shape((sidelen, sidelen))
             .unwrap()
             .into_owned();
@@ -1849,8 +1850,8 @@ where
     pub fn into_tensor_par(self, pool: &Pool<MPSIndex<T>, A>)
         -> Tensor<T, A>
     {
-        let tens
-            = self.into_network()
+        let tens =
+            self.into_network()
             .contract_par(pool)
             .unwrap();
         unsafe { tens.map_indices(MPSIndex::into_physical) }
@@ -1863,8 +1864,8 @@ where
         pool: &Pool<MPSMatIndex<T>, A>,
     ) -> Tensor<MatIndex<T>, A>
     {
-        let dens
-            = self.into_network_density()
+        let dens =
+            self.into_network_density()
             .contract_par(pool)
             .unwrap();
         unsafe { dens.map_indices(MPSMatIndex::into_physical) }
@@ -1878,8 +1879,8 @@ where
         pool: &Pool<MPSMatIndex<T>, A>,
     ) -> Tensor<MatIndex<T>, A>
     {
-        let dens
-            = self.into_network_part(part)
+        let dens =
+            self.into_network_part(part)
             .contract_par(pool)
             .unwrap();
         unsafe { dens.map_indices(MPSMatIndex::into_physical) }
@@ -1902,12 +1903,12 @@ where
         let mut rho_tens = self.clone().into_tensor_part_par(part, pool);
         rho_tens.sort_indices();
         let (indices, data) = rho_tens.into_flat();
-        let sidelen: usize
-            = indices.iter()
+        let sidelen: usize =
+            indices.iter()
             .map(|idx| idx.dim())
             .product();
-        let rho: nd::Array2<A>
-            = data.as_standard_layout()
+        let rho: nd::Array2<A> =
+            data.as_standard_layout()
             .into_shape((sidelen, sidelen))
             .unwrap()
             .into_owned();
@@ -2027,8 +2028,8 @@ impl MPS<Q, C64> {
 }
 
 fn block_indent(tab: &str, level: usize, s: &str) -> String {
-    let lines: Vec<String>
-        = s.split('\n')
+    let lines: Vec<String> =
+        s.split('\n')
         .filter(|line| !line.trim().is_empty())
         .map(|line| tab.repeat(level) + line)
         .collect();
@@ -2103,8 +2104,8 @@ where
     A::Re: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let iter
-            = self.data.iter().zip(&self.svals).zip(&self.outs).enumerate();
+        let iter =
+            self.data.iter().zip(&self.svals).zip(&self.outs).enumerate();
         for (k, ((g, l), out)) in iter {
             let sh = g.shape();
             writeln!(f, "Γ[{}] :: {{ <{}>, {}<{}>, <{}> }}",
@@ -2508,8 +2509,8 @@ where
     if n == 1 {
         entropy_vn(rho)
     } else {
-        let nfloat: A::Re
-            = (0..n)
+        let nfloat: A::Re =
+            (0..n)
             .map(|_| A::Re::one())
             .fold(A::Re::zero(), A::Re::add);
         let prefactor = (A::Re::one() - nfloat).recip();
