@@ -576,90 +576,18 @@ where
         state.map_inplace(|a| { *a /= norm; });
         let n = indices.len();
         if n == 1 {
-            let mut g: nd::Array3<A>
-                = nd::Array::zeros((1, indices[0].dim(), 1));
+            let mut g: nd::Array3<A> =
+                nd::Array::zeros((1, indices[0].dim(), 1));
             state.into_owned().move_into(g.slice_mut(nd::s![0, .., 0]));
             let data: Vec<nd::Array3<A>> = vec![g];
             let svals: Vec<nd::Array1<A::Re>> = Vec::with_capacity(0);
             Ok(Self { n, data, outs: indices, svals, trunc })
         } else {
-            let (data, svals)
-                = Self::factorize(&indices, state.into_owned(), trunc);
+            let (data, svals) =
+                Self::factorize(&indices, state.into_owned(), trunc);
             Ok(Self { n, data, outs: indices, svals, trunc })
         }
     }
-}
-
-pub(crate) fn do_contract_local_2<A>(
-    ls: Option<&nd::Array1<A::Re>>,
-    l: &nd::Array3<A>,
-    s: &nd::Array1<A::Re>,
-    r: &nd::Array3<A>,
-    rs: Option<&nd::Array1<A::Re>>,
-) -> nd::Array2<A>
-where A: ComplexLinalgScalar
-{
-    let mut l = l.as_standard_layout();
-    if let Some(ls) = ls {
-        nd::Zip::from(l.axis_iter_mut(nd::Axis(0)))
-            .and(ls)
-            .for_each(|mut gv__, lsv| {
-                let lsv = A::from_re(*lsv);
-                gv__.map_inplace(|gvsu| { *gvsu *= lsv; });
-            });
-    }
-    let mut r = r.as_standard_layout();
-    if let Some(rs) = rs {
-        nd::Zip::from(r.axis_iter_mut(nd::Axis(2)))
-            .and(rs)
-            .for_each(|mut g__w, rsw| {
-                let rsw = A::from_re(*rsw);
-                g__w.map_inplace(|g__w| { *g__w *= rsw; });
-            });
-    }
-    nd::Zip::from(r.axis_iter_mut(nd::Axis(0)))
-        .and(s)
-        .for_each(|mut gu__, su| {
-            let su = A::from_re(*su);
-            gu__.map_inplace(|gusw| { *gusw *= su; });
-        });
-    let shl = l.dim();
-    let l = l.into_shape((shl.0 * shl.1, shl.2)).unwrap();
-    let shr = r.dim();
-    let r = r.into_shape((shr.0, shr.1 * shr.2)).unwrap();
-    l.dot(&r)
-}
-
-pub(crate) fn do_contract_local_3<A>(
-    ls: Option<&nd::Array1<A::Re>>,
-    l: &nd::Array3<A>,
-    s: &nd::Array1<A::Re>,
-    r: &nd::Array3<A>,
-    rs: Option<&nd::Array1<A::Re>>,
-) -> nd::Array3<A>
-where A: ComplexLinalgScalar
-{
-    let shl = l.dim();
-    let shr = r.dim();
-    do_contract_local_2(ls, l, s, r, rs)
-        .into_shape((shl.0, shl.1 * shr.1, shr.2))
-        .unwrap()
-}
-
-pub(crate) fn do_contract_local_4<A>(
-    ls: Option<&nd::Array1<A::Re>>,
-    l: &nd::Array3<A>,
-    s: &nd::Array1<A::Re>,
-    r: &nd::Array3<A>,
-    rs: Option<&nd::Array1<A::Re>>,
-) -> nd::Array4<A>
-where A: ComplexLinalgScalar
-{
-    let shl = l.dim();
-    let shr = r.dim();
-    do_contract_local_2(ls, l, s, r, rs)
-        .into_shape((shl.0, shl.1, shr.1, shr.2))
-        .unwrap()
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1371,14 +1299,15 @@ where
         if k >= self.n { return Ok(self); }
         let dk = self.outs[k].dim();
         if op.shape() != [dk, dk] { return Err(OperatorIncompatibleShape); }
-        self.data[k]
-            .axis_iter_mut(nd::Axis(0))
-            .for_each(|mut gkv| {
-                gkv.axis_iter_mut(nd::Axis(1))
-                    .for_each(|mut gkv_u| {
-                        gkv_u.assign(&op.dot(&gkv_u));
-                    });
-            });
+        if k == self.n - 1 {
+            assert_eq!(self.data[k].shape()[2], 1);
+            let gmat: nd::ArrayView2<A> = self.data[k].slice(nd::s![.., .., 0]);
+            let dot = gmat.dot(&op.t());
+            self.data[k].slice_mut(nd::s![.., .., 0]).assign(&dot);
+        } else {
+            self.data[k].outer_iter_mut()
+                .for_each(|mut gv| { gv.assign(&op.dot(&gv)); });
+        }
         Ok(self)
     }
 }
@@ -1410,13 +1339,15 @@ where
         }
 
         let mut q = self.contract_local3(k);
-        q.axis_iter_mut(nd::Axis(0))
-            .for_each(|mut qv__| {
-                qv__.axis_iter_mut(nd::Axis(1))
-                    .for_each(|mut qv_w| {
-                        qv_w.assign(&op.dot(&qv_w));
-                    });
-            });
+        if k == self.n - 2 {
+            assert_eq!(q.shape()[2], 1);
+            let qmat: nd::ArrayView2<A> = q.slice(nd::s![.., .., 0]);
+            let dot = qmat.dot(&op.t());
+            q.slice_mut(nd::s![.., .., 0]).assign(&dot);
+        } else {
+            q.outer_iter_mut()
+                .for_each(|mut qv| { qv.assign(&op.dot(&qv)); });
+        }
 
         let Schmidt { u, s, q, rank }
             = q.into_shape((shk.0 * shk.1, shkp1.1 * shkp1.2)).unwrap()
