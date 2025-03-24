@@ -91,6 +91,14 @@ name = "haar_mixing"
 path = "src/clifford_mixing.rs"
 name = "clifford_mixing"
 
+[[bin]]
+path = "src/haar_state_gen.rs"
+name = "haar_state_gen"
+
+[[bin]]
+path = "src/haar_coev_probs.rs"
+name = "haar_coev_probs"
+
 [profile.release]
 lto = true
 panic = "abort"
