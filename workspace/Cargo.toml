@@ -100,6 +100,18 @@ name = "haar_state_gen"
 path = "src/haar_coev_probs.rs"
 name = "haar_coev_probs"
 
+[[bin]]
+path = "src/circuit_file_test.rs"
+name = "circuit_file_test"
+
+[[bin]]
+path = "src/haar_gen_circuits.rs"
+name = "haar_gen_circuits"
+
+[[bin]]
+path = "src/haar_coev_probs_batching.rs"
+name = "haar_coev_probs_batching"
+
 [profile.release]
 lto = true
 panic = "abort"
