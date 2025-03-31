@@ -173,7 +173,7 @@ where
         .for_each(|(k, mat)| { state.apply_unitary2(*k, mat).unwrap(); });
     let outs: Vec<Meas> =
         meas.as_ref().iter()
-        .filter(|m| !target.is_some_and(|j| j == m.idx()))
+        .filter(|m| target.is_none_or(|j| j == m.idx()))
         .map(|m| {
             match m {
                 Meas::Rand(k) => {

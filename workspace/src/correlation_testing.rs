@@ -65,7 +65,7 @@ where R: Rng + ?Sized
     layer.unis.iter()
         .for_each(|(j, uni)| { state.apply_unitary2(*j, uni).unwrap(); });
     layer.meas.iter()
-        .filter(|j| !target.is_some_and(|k| k == **j))
+        .filter(|j| target.is_none_or(|k| k == **j))
         .for_each(|j| { state.measure(*j, rng); });
     target.and_then(|k| state.probs(k))
 }
@@ -180,6 +180,7 @@ where R: Rng + ?Sized
     } else { unreachable!() }
 }
 
+#[allow(static_mut_refs)]
 fn compute_avg<R>(
     progress: Option<&str>,
     bond: Option<BondDim<f64>>,

@@ -32,6 +32,7 @@ static mut SAMPLE_COUNTER: usize = 0;
 /// Sample the classical measurement outcomes of a fixed circuit `avg` times,
 /// returning data in a 3D array :: { avg, d, n } for circuit depth d and number
 /// of qubits n.
+#[allow(static_mut_refs)]
 fn sample_outcomes(circ: &Circuit, avg: usize) -> nd::Array3<i8> {
     let mut z: nd::Array3<i8>
         = nd::Array3::zeros((avg, circ.depth(), circ.nqubits()));

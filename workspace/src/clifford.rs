@@ -200,7 +200,7 @@ where R: Rng + ?Sized
             state.apply_unitary2(mat.0, &mat.1).unwrap();
         });
     meas.0.iter()
-        .filter(|k| !target.is_some_and(|j| j == **k))
+        .filter(|k| target.is_none_or(|j| j == **k))
         .for_each(|k| { state.measure(*k, rng); });
     target.and_then(|k| state.prob(k, 0).zip(state.prob(k, 1)))
 }
@@ -217,7 +217,7 @@ where R: Rng + ?Sized
     unis.0.iter()
         .for_each(|Uni { gates, mat: _ }| { state.apply_circuit(gates); });
     meas.0.iter()
-        .filter(|k| !target.is_some_and(|j| j == **k))
+        .filter(|k| target.is_none_or(|j| j == **k))
         .for_each(|k| { state.measure(*k, rng); });
     target.map(|k| state.probs(k).into())
 }
@@ -402,6 +402,7 @@ where R: Rng + ?Sized
     Data { p00, p01, p10, p11 }
 }
 
+#[allow(static_mut_refs)]
 fn compute_bond_avg(
     bond: Option<usize>,
     init: (&[UniLayer], &[MeasLayer]),
@@ -513,6 +514,7 @@ fn compute_bond_avg(
     totals
 }
 
+#[allow(static_mut_refs)]
 fn main() {
     static mut COUNTER: usize = 0;
     let counter_total: usize = CIRCS * P_MEAS.len() * BONDS.len();

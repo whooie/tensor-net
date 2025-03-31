@@ -68,7 +68,7 @@ where R: Rng + ?Sized
     unis.0.iter()
         .for_each(|(k, uni)| { state.apply_unitary2(*k, uni).unwrap(); });
     meas.0.iter()
-        .filter(|k| !target.is_some_and(|j| j == **k))
+        .filter(|k| target.is_none_or(|j| j == **k))
         .for_each(|k| { state.measure(*k, rng); });
     target.and_then(|k| state.prob(k, 0).zip(state.prob(k, 1)))
 }
@@ -182,6 +182,7 @@ where R: Rng + ?Sized
     Data { p00, p01, p10, p11 }
 }
 
+#[allow(static_mut_refs)]
 fn compute_bond_avg(
     bond: Option<BondDim<f64>>,
     init: (&[UniLayer], &[MeasLayer]),
@@ -235,6 +236,7 @@ fn compute_bond_avg(
     totals
 }
 
+#[allow(static_mut_refs)]
 fn main() {
     static mut COUNTER: usize = 0;
     let counter_total: usize = CIRCS * P_MEAS.len() * BONDS.len();

@@ -228,7 +228,7 @@ where R: Rng + ?Sized
         });
     let outs: Vec<Meas> =
         meas.get().iter()
-            .filter(|m| !target.is_some_and(|j| j == m.idx()))
+            .filter(|m| target.is_none_or(|j| j != m.idx()))
             .map(|m| {
                 match m {
                     Meas::Rand(k) => {

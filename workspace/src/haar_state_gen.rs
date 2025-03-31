@@ -42,6 +42,7 @@ fn sample_matrix_record(
     (state.into_matrix_part(part).1, meas_record)
 }
 
+#[allow(static_mut_refs)]
 fn main() {
     const SEED: u64 = 10546;
     // circuit generation RNG

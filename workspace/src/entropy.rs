@@ -7,6 +7,7 @@ use tensor_net::circuit::*;
 use tensor_net::mps::BondDim;
 use whooie::{ mkdir, print_flush, write_npz };
 
+#[allow(static_mut_refs)]
 fn main() {
     const N: usize = 4;
     const MC: usize = 1000;
