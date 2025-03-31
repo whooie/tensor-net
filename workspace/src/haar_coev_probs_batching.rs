@@ -23,7 +23,9 @@ const P_MEAS: &[f64] = &[
 ];
 const RUNS: usize = 32;
 const BONDS: &[Option<usize>] = &[
-    None, Some(4), Some(8), Some(10), Some(12), Some(16), Some(20), Some(32),
+    None,
+    Some(4),  Some(6),  Some(8),  Some(10), Some(12),
+    Some(16), Some(20), Some(24), Some(28), Some(32),
 ];
 const CIRCUIT_SEED: u64 = 10546;
 
