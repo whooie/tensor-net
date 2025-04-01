@@ -1,11 +1,13 @@
 use std::{
-    env,
     path::PathBuf,
     sync::atomic::{ AtomicUsize, Ordering },
 };
 use ndarray as nd;
 use num_complex::Complex64 as C64;
-use rand::thread_rng;
+use rand::{
+    thread_rng,
+    distributions::{ Alphanumeric, DistString },
+};
 // use rayon::iter::{ IntoParallelIterator, ParallelIterator };
 use tensor_net::{ circuit::Q, mps::* };
 use whooie::write_npz;
@@ -75,7 +77,7 @@ enum Instance {
 }
 
 impl Instance {
-    fn fmt(&self, circ: usize, task_id: Option<usize>) -> String {
+    fn fmt(&self, circ: usize, task_id: Option<&str>) -> String {
         match (self, task_id) {
             (Self::Unis, None) =>
                 format!("unis_seed={}_n={}_depth={}_circ={}.npz",
@@ -101,15 +103,16 @@ impl Instance {
 
 fn main() {
     rayon::ThreadPoolBuilder::new()
-        .num_threads(32)
+        .num_threads(RUNS.min(32))
         .build_global()
         .unwrap();
 
-    let circuit_dir = PathBuf::from("output").join("haar_circuits");
-    let outdir = PathBuf::from("output").join("haar_coev_probs");
-    let task_id =
-        env::var("SLURM_ARRAY_TASK_ID").unwrap()
-        .parse::<usize>().unwrap();
+    let circuit_dir = PathBuf::from("output/haar_circuits");
+    let outdir = PathBuf::from("/scratch/whuie2/haar_coev_probs");
+    // let task_id =
+    //     env::var("SLURM_ARRAY_TASK_ID").unwrap()
+    //     .parse::<usize>().unwrap();
+    let task_id = Alphanumeric.sample_string(&mut thread_rng(), 10);
 
     for i in 0..CIRCS {
         if !circuit_dir.join(Instance::Unis.fmt(i, None)).is_file() {
@@ -162,29 +165,29 @@ fn main() {
                     let Trajectory { traj, probs } =
                         sample_trajectory((&unis, meas_p));
                     traj.into_iter()
-                        .zip(traj_pr.outer_iter_mut())
-                        .for_each(|(meas_layer, mut meas_rec)| {
-                            meas_layer.into_iter()
-                                .for_each(|m| {
-                                    match m {
-                                        Meas::Rand(_) => { },
-                                        Meas::Postsel(k, out) => {
-                                            meas_rec[k] =
-                                                if out { 1 } else { -1 };
-                                        },
-                                    }
-                                });
+                    .zip(traj_pr.outer_iter_mut())
+                    .for_each(|(meas_layer, mut meas_rec)| {
+                        meas_layer.into_iter()
+                        .for_each(|m| {
+                            match m {
+                                Meas::Rand(_) => { },
+                                Meas::Postsel(k, out) => {
+                                    meas_rec[k] =
+                                        if out { 1 } else { -1 };
+                                },
+                            }
                         });
+                    });
                     probs.into_iter()
-                        .zip(prob_pr.outer_iter_mut())
-                        .for_each(|(prob_data_prx, mut prob_rec_prx)| {
-                            prob_data_prx.into_iter()
-                                .zip(prob_rec_prx.outer_iter_mut())
-                                .for_each(|(prob_layer, mut prob_rec)| {
-                                    prob_layer.into_iter()
-                                    .for_each(|(k, p)| { prob_rec[k] = p; });
-                                });
+                    .zip(prob_pr.outer_iter_mut())
+                    .for_each(|(prob_data_prx, mut prob_rec_prx)| {
+                        prob_data_prx.into_iter()
+                        .zip(prob_rec_prx.outer_iter_mut())
+                        .for_each(|(prob_layer, mut prob_rec)| {
+                            prob_layer.into_iter()
+                            .for_each(|(k, p)| { prob_rec[k] = p; });
                         });
+                    });
                     let prev_run = run.fetch_add(1, Ordering::SeqCst);
                     eprint!("\x1b[{}D{:w_run$} / {:w_run$} ",
                         2 * w_run + 4, prev_run + 1, RUNS);
@@ -192,7 +195,7 @@ fn main() {
             eprint!("\x1b[{}D", 2 * w_run + 5);
         }
         eprint!("\x1b[{}D", 2 * w_p + 5);
-        let fname = Instance::Output.fmt(i, Some(task_id));
+        let fname = Instance::Output.fmt(i, Some(&task_id));
         write_npz!(
             outdir.join(fname),
             arrays: {
