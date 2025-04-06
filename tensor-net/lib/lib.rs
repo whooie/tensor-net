@@ -3,6 +3,7 @@
 //! Tools for simulating measurement-induced phase transitions in registers of
 //! qubits using tensor networks.
 
+use nalgebra as na;
 use num_complex::{ ComplexFloat, Complex };
 use num_traits::{ Float, Zero };
 
@@ -15,6 +16,10 @@ pub mod pmps;
 pub mod lazymps;
 pub mod gate;
 pub mod circuit;
+
+pub mod gamma;
+pub mod mps_na;
+pub mod gate_na;
 
 /// Extension trait for [`ComplexFloat`].
 pub trait ComplexFloatExt: ComplexFloat /*+ std::fmt::Debug*/
@@ -79,5 +84,32 @@ where
     fn from_polar(r: Self::Real, theta: Self::Real) -> Self {
         Complex::from_polar(r, theta)
     }
+}
+
+// NOTE: Dependence on ComplexFloat seems to be mostly redundant via
+// ComplexField -- should check this
+
+/// Convenience trait to identity complex number types that can be used in
+/// linear-algebraic operations.
+pub trait ComplexScalar
+where
+    Self:
+        ComplexFloat<Real = Self::Re>
+        + ComplexFloatExt
+        + na::ComplexField<RealField = Self::Re>
+{
+    /// Type for associated real values.
+    type Re: Float + na::RealField;
+}
+
+impl<A> ComplexScalar for A
+where
+    A:
+        ComplexFloat<Real = <A as na::ComplexField>::RealField>
+        + ComplexFloatExt
+        + na::ComplexField,
+    <A as na::ComplexField>::RealField: Float,
+{
+    type Re = <A as na::ComplexField>::RealField;
 }
 

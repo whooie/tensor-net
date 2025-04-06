@@ -10,6 +10,7 @@ edition = "2021"
 # ndarray-npy = "*"
 crossbeam = "0.8.4"
 itertools = "0.12.1"
+nalgebra = "0.33.2"
 ndarray = "0.15.6"
 ndarray-linalg = { version = "0.16.0", features = ["openblas"] }
 num-complex = "0.4.5"
