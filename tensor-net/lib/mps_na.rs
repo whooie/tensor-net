@@ -27,15 +27,16 @@
 //! correlations. Γ matrices (one for every particle) store information on the
 //! local state of each particle and can be thought of as basis transformations
 //! from the physical basis to that of a relevant Schmidt basis. Λ vectors exist
-//! as weighting factors on bonded indices.
+//! as weighting factors on bonded indices, and are thought of as encoding
+//! quantum correlations across bonds.
 //!
 //! ```text
-//!       .-bond 0-.        .-bond 1-.       .-bond n-2-.
-//!       V        V        V        V       V          V
-//! Γ[0] --- Λ[0] --- Γ[1] --- Λ[1] --- ... --- Λ[n-2] --- Γ[n-1]
-//!  |                 |                                     |
-//!  | <- physical     | <- physical                         | <- physical
-//!       index 0           index 1                               index n-1
+//!       .- bond 0 -.        .- bond 1 -.       .- bond n-2 -.
+//!       V          V        V          V       V            V
+//! Γ[0] ---- Λ[0] ---- Γ[1] ---- Λ[1] ---- ... ---- Λ[n-2] ---- Γ[n-1]
+//!  |                   |                                         |
+//!  | <- physical       | <- physical                             | <- physical
+//!       index 0             index 1                                   index n-1
 //! ```
 //!
 //! # Example
@@ -48,13 +49,12 @@
 //! use tensor_net::mps_na::*;
 //! use tensor_net::tensor::Idx;
 //!
-//! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-//! struct Q(usize); // `Q(k)` is a qubit degree of freedom for the `k`-th qubit.
+//! // `Q(k)` is a qubit degree of freedom for the `k`-th particle.
+//! #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+//! struct Q(usize);
 //!
 //! impl Idx for Q {
 //!     fn dim(&self) -> usize { 2 }
-//!
-//!     fn label(&self) -> String { format!("{self:?}") }
 //! }
 //!
 //! let h: na::DMatrix<C64> =
@@ -93,7 +93,6 @@
 //! // either [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 //! // or     [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 //! // based on the result of the measurement
-//! panic!()
 //! ```
 
 use std::{
@@ -612,13 +611,13 @@ where T: ComplexScalar
 ///
 /// The MPS is maintained in a so-called "canonical" factorization based on the
 /// Schmidt decomposition. The Schmidt values are readily available at any given
-/// time, which enables efficient calculation of entanglement entropys, at the
+/// time, which enables efficient calculation of entanglement entropies, at the
 /// cost of locally re-computing the decomposition for projective measurements
 /// and multi-particle unitaries.
 ///
 /// Initial factorization of an arbitrary state (see
 /// [`from_vector`][Self::from_vector]) happens via a series of singular value
-/// decompositions, which uncurs a total runtime cost that os *O*(*n*
+/// decompositions, which incurs a total runtime cost that is *O*(*n*
 /// *D*<sup>*n*</sup>), where *n* is the number of particles and *D* is the
 /// maximum dimension of their quantum numbers/indices.
 ///
@@ -666,7 +665,7 @@ where
     ///
     /// Optionally provide a global truncation method for discarding singular
     /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
-    /// the numerical type `A`.
+    /// the numerical type `A::Re`.
     ///
     /// Fails if no physical indices are provided or an unphysical
     /// (zero-dimensional) index is encountered.
@@ -702,7 +701,7 @@ where
     ///
     /// Optionally provide a global truncation method for discarding singular
     /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
-    /// the numerical type `A`.
+    /// the numerical type `A::Re`.
     ///
     /// Fails if no physical indices are provided, an unphysical
     /// (zero-dimensional) index is encountered, or the given quantum number for
@@ -789,7 +788,11 @@ where
     ///
     /// Optionally provide a global truncation method for discarding singular
     /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
-    /// the numerical type `A`.
+    /// the numerical type `A::Re`.
+    ///
+    /// Fails if no particle indices are provided, an unphysical
+    /// (zero-dimensional) index is encountered, or the length of the initial
+    /// state vector does not agree with the indices.
     ///
     /// **Note:** The state vector should be in *column-major order*. Although
     /// vectors are one-column data structures, this still has implications for
@@ -808,10 +811,6 @@ where
     /// | ...         | ...                       | ...                          |
     /// | *n* – 2     | ∣11...10⟩                 | ∣01...11⟩                    |
     /// | *n* – 1     | ∣11...11⟩                 | ∣11...11⟩                    |
-    ///
-    /// Fails if no particle indices are provided, an unphysical
-    /// (zero-dimensional) index is encountered, or the length of the initial
-    /// state vector does not agree with the indices.
     pub fn from_vector<I, J>(
         indices: I,
         state: J,
