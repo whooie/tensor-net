@@ -767,7 +767,8 @@ where
             // in s, and right vectors are rows in q
             //
             // q is returned here with schmidt index scaled by schmidt values
-            let Schmidt { u, s, q: qp, rank } = local_decomp(q, trunc, true);
+            let Schmidt { u, s, q: qp, rank } =
+                Schmidt::from_decomp(q, trunc, true);
             q = qp;
             let mut g = Gamma::new_lfused(outdim, u);
             if let Some(slast) = svals.last() {
@@ -920,28 +921,41 @@ where
             },
             (false, false) => {
                 let mut gamma_iter = self.data.drain(i0..=i1);
-                let Some(mut q0) = gamma_iter.next() else { unreachable!() };
-                q0.scale_left(self.svals[i0 - 1].iter().copied());
-                let part: Gamma<A> =
+                let Some(q0) = gamma_iter.next() else { unreachable!() };
+                let mut part: Gamma<A> =
                     self.svals[i0..i1].iter().zip(gamma_iter)
                     .fold(q0, |q, (s, g)| q.contract_bond(s.iter().copied(), g).0);
-                let part_conj = part.adjoint();
                 let (m, dim, n) = part.dims();
-                let rho_big =
-                    if m > n {
-                        let mut tr =
-                            part_conj.contract_bond(
-                                self.svals[i0 - 1].iter().map(|s| s.powi(2)), part).0
-                            .unwrap_lfused()
-                            .reshape_generic(na::Dyn(n * dim), na::Dyn(n * dim));
-                        tr.transpose_mut();
-                        tr
-                    } else {
+                // compare the remaining left and right bond dimensions: we can
+                // only contract one of them at a time since they sandwich the
+                // physical indices and there's no way to re-order indices. the
+                // first one will be contracted using matmul via
+                // Gamma::contract_bond, but the second one will have to be done
+                // using a manual loop that accumulates a matrix-valued sum (see
+                // below). matmul is probably faster than this loop, so that's
+                // what we'll use for the larger of the two dimensions; this
+                // influences which set of singular values will be applied and
+                // when
+                let rho_big: na::DMatrix<A>;
+                if m > n {
+                    part.scale_right(self.svals[i1].iter().copied());
+                    let part_conj = part.adjoint();
+                    let mut tr =
+                        part_conj.contract_bond(
+                            self.svals[i0 - 1].iter().map(|s| s.powi(2)), part).0
+                        .unwrap_lfused()
+                        .reshape_generic(na::Dyn(n * dim), na::Dyn(n * dim));
+                    tr.transpose_mut();
+                    rho_big = tr;
+                } else {
+                    part.scale_left(self.svals[i0 - 1].iter().copied());
+                    let part_conj = part.adjoint();
+                    rho_big =
                         part.contract_bond(
                             self.svals[i1].iter().map(|s| s.powi(2)), part_conj).0
                         .unwrap_lfused()
-                        .reshape_generic(na::Dyn(m * dim), na::Dyn(m * dim))
-                    };
+                        .reshape_generic(na::Dyn(m * dim), na::Dyn(m * dim));
+                }
                 rho = na::DMatrix::zeros(dim, dim);
                 let d = m.min(n);
                 for j in 0..d {
@@ -1437,6 +1451,8 @@ where
             return Err(OperatorIncompatibleShape);
         }
         self.map_pair(k, |mut g| { g.apply_op(op); g });
+        self.local_renormalize(k);
+        self.local_renormalize(k + 1);
         Ok(self)
     }
 }
@@ -1536,6 +1552,223 @@ where
         let prob = self.local_prob(k, p);
         self.project_state(k, p, prob.sqrt());
         self.refactor_sweep();
+    }
+}
+
+impl MPS<Q, C64> {
+    /// Create a new `n`-qubit state initialized to all qubits in ∣0⟩.
+    ///
+    /// Optionally provide a global truncation method for discarding singular
+    /// values. Defaults to a [`Cutoff`][BondDim::Cutoff] at machine epsilon for
+    /// the numerical type `A::Re`.
+    ///
+    /// Fails if `n == 0`.
+    pub fn new_qubits(n: usize, trunc: Option<BondDim<f64>>)
+        -> MPSResult<Self>
+    {
+        Self::new((0..n).map(Q), trunc)
+    }
+
+    /// Apply a gate unitary in place.
+    ///
+    /// Does nothing if any qubit indices are out of bounds.
+    pub fn apply_gate(&mut self, gate: Gate) -> &mut Self {
+        match gate {
+            Gate::U(k, alpha, beta, gamma) if k < self.n => {
+                self.apply_op1(k, &gate::make_u(alpha, beta, gamma))
+                    .unwrap();
+            },
+            Gate::H(k) if k < self.n => {
+                self.apply_op1(k, Lazy::force(&gate::HMAT))
+                    .unwrap();
+            },
+            Gate::X(k) if k < self.n => {
+                self.apply_op1(k, Lazy::force(&gate::XMAT))
+                    .unwrap();
+            },
+            Gate::Z(k) if k < self.n => {
+                self.apply_op1(k, Lazy::force(&gate::ZMAT))
+                    .unwrap();
+            },
+            Gate::S(k) if k < self.n => {
+                self.apply_op1(k, Lazy::force(&gate::SMAT))
+                    .unwrap();
+            },
+            Gate::SInv(k) if k < self.n => {
+                self.apply_op1(k, Lazy::force(&gate::SINVMAT))
+                    .unwrap();
+            },
+            Gate::XRot(k, alpha) if k < self.n => {
+                self.apply_op1(k, &gate::make_xrot(alpha))
+                    .unwrap();
+            },
+            Gate::ZRot(k, alpha) if k < self.n => {
+                self.apply_op1(k, &gate::make_zrot(alpha))
+                    .unwrap();
+            },
+            Gate::CX(k) if k < self.n - 1 => {
+                self.apply_op2(k, Lazy::force(&gate::CXMAT))
+                    .unwrap();
+            },
+            Gate::CXRev(k) if k < self.n - 1 => {
+                self.apply_op2(k, Lazy::force(&gate::CXREVMAT))
+                    .unwrap();
+            },
+            Gate::CZ(k) if k < self.n - 1 => {
+                self.apply_op2(k, Lazy::force(&gate::CZMAT))
+                    .unwrap();
+            },
+            Gate::Haar2(k) if k < self.n - 1 => {
+                // TODO: figure out a way to avoid having to call thread_rng
+                // here; it's slow
+                let mut rng = rand::thread_rng();
+                self.apply_op2(k, &gate::haar(2, &mut rng))
+                    .unwrap();
+            },
+            _ => { },
+        }
+        self
+    }
+
+    /// Perform a series of gates.
+    pub fn apply_circuit<'a, I>(&mut self, gates: I) -> &mut Self
+    where I: IntoIterator<Item = &'a Gate>
+    {
+        gates.into_iter().copied()
+            .for_each(|g| { self.apply_gate(g); });
+        self
+    }
+
+    /// Like [`measure`][Self::measure], but deterministically reset the state
+    /// to ∣0⟩ after measurement.
+    pub fn measure_reset<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
+    where R: Rng + ?Sized
+    {
+        let res = self.measure(k, rng);
+        if let Some(1) = res {
+            self.apply_op1(k, Lazy::force(&gate::XMAT))
+                .unwrap();
+        }
+        res
+    }
+
+    /// Like [`measure_postsel`][Self::measure_postsel], but deterministically
+    /// reset the state to ∣0⟩ after measurement.
+    pub fn measure_postsel_reset(&mut self, k: usize, p: usize) {
+        self.measure_postsel(k, p);
+        if p != 0 {
+            self.apply_op1(k, Lazy::force(&gate::XMAT))
+                .unwrap();
+        }
+    }
+}
+
+fn block_indent(tab: &str, level: usize, s: &str) -> String {
+    let lines: Vec<String> =
+        s.split('\n')
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| tab.repeat(level) + line)
+        .collect();
+    lines.join("\n")
+}
+
+impl<T, A> fmt::Debug for MPS<T, A>
+where
+    T: fmt::Debug,
+    A: ComplexScalar + fmt::Debug,
+    A::Re: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const TAB: &str = "    ";
+        writeln!(f, "MPS {{")?;
+        writeln!(f, "    n: {:?},", self.n)?;
+        writeln!(f, "    data: [")?;
+        for datak in self.data.iter() {
+            writeln!(f, "{},", block_indent(TAB, 2, &format!("{datak:?}")))?;
+        }
+        writeln!(f, "    ],")?;
+        writeln!(f, "    idxs: {:?},", self.idxs)?;
+        writeln!(f, "    svals: [")?;
+        for svalsk in self.svals.iter() {
+            writeln!(f, "{},", block_indent(TAB, 2, &format!("{svalsk:?}")))?;
+        }
+        writeln!(f, "    ],")?;
+        writeln!(f, "    trunc: {:?}", self.trunc)?;
+        write!(f, "}}")?;
+        Ok(())
+    }
+}
+
+fn fmt_gamma<A>(
+    gamma: &Gamma<A>,
+    indent: usize,
+    indent_str: &str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result
+where A: na::Scalar + fmt::Display
+{
+    let tab = indent_str.repeat(indent);
+    let (m, s, n) = gamma.dims();
+    if let GData::LFused(mat) = gamma.data() {
+        for (v, g__v) in mat.column_iter().enumerate() {
+            let row_mat = g__v.reshape_generic(na::Dyn(m), na::Dyn(s));
+            for (u, gu_v) in row_mat.row_iter().enumerate() {
+                write!(f, "{}[", tab)?;
+                for (k, gusv) in gu_v.iter().enumerate() {
+                    fmt::Display::fmt(gusv, f)?;
+                    if k < s { write!(f, ", ")?; }
+                }
+                write!(f, "] u={} v={}", u, v)?;
+                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+            }
+        }
+    } else if let GData::RFused(mat) = gamma.data() {
+        for v in 0..n {
+            let row_mat = mat.columns_range(s * v .. s * (v + 1));
+            for (u, gu_v) in row_mat.row_iter().enumerate() {
+                write!(f, "{}[", tab)?;
+                for (k, gusv) in gu_v.iter().enumerate() {
+                    fmt::Display::fmt(gusv, f)?;
+                    if k < s { write!(f, ", ")?; }
+                }
+                write!(f, "] u={} v={}", u, v)?;
+                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl<T, A> fmt::Display for MPS<T, A>
+where
+    T: Idx,
+    A: ComplexScalar + fmt::Display,
+    A::Re: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let iter =
+            self.data.iter().zip(&self.svals).zip(&self.idxs).enumerate();
+        for (k, ((g, l), idx)) in iter {
+            let (m, s, n) = g.dims();
+            writeln!(f, "Γ[{}] :: {{ <{}>, {}::<{}>, <{}> }} =",
+                k, m, idx.label(), s, n)?;
+            fmt_gamma(g, 1, "    ", f)?;
+            writeln!(f)?;
+
+            let llen = l.len();
+            writeln!(f, "Λ[{}] :: {{ <{}> }} =", k, llen)?;
+            write!(f, "    [")?;
+            for (j, lj) in l.iter().enumerate() {
+                write!(f, "{}", lj)?;
+                if j < llen { write!(f, ", ")?; }
+            }
+            writeln!(f, "]")?;
+        }
+        let (m, s, n) = self.data[self.n - 1].dims();
+        writeln!(f, "Γ[{}] :: {{ <{}>, {}::<{}>, <{}> }} =",
+            self.n - 1, m, self.idxs[self.n - 1].label(), s, n)?;
+        fmt_gamma(&self.data[self.n - 1], 1, "    ", f)?;
+        Ok(())
     }
 }
 
