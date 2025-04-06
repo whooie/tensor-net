@@ -876,6 +876,7 @@ where
         self.svals[k] = s;
         self.data[k + 1] = gkp1_new;
         self.local_renormalize(k);
+        self.local_renormalize(k + 1);
     }
 
     // apply local refactors to each bond in the MPS, going left to right
@@ -1068,7 +1069,7 @@ where
     ///
     /// Returns `None` if `k` or `p` is out of bounds.
     pub fn prob(&self, k: usize, p: usize) -> Option<A::Re> {
-        if !self.outs.get(k).is_some_and(|idx| p < idx.dim()) { return None; }
+        if self.outs.get(k).is_none_or(|idx| p >= idx.dim()) { return None; }
         Some(self.local_prob(k, p))
     }
 
