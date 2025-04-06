@@ -1,5 +1,8 @@
 //! Definitions of common one- and two-qubit gates for use with
 //! [`MPS`][crate::mps_na::MPS] and [`MPSCircuit`][crate::circuit::MPSCircuit].
+//!
+//! Note that all multi-qubit unitary matrices conform to *column-major* (i.e.
+//! little-endian) ordering of basis elements.
 
 use itertools::Itertools;
 use nalgebra as na;
@@ -642,9 +645,9 @@ where A: ComplexScalar
 {
     na::dmatrix![
         A::one(),  A::zero(), A::zero(), A::zero();
-        A::zero(), A::one(),  A::zero(), A::zero();
         A::zero(), A::zero(), A::zero(), A::one() ;
         A::zero(), A::zero(), A::one(),  A::zero();
+        A::zero(), A::one(),  A::zero(), A::zero();
     ]
 }
 
@@ -660,9 +663,9 @@ where A: ComplexScalar
 {
     na::dmatrix![
         A::one(),  A::zero(), A::zero(), A::zero();
+        A::zero(), A::one(),  A::zero(), A::zero();
         A::zero(), A::zero(), A::zero(), A::one() ;
         A::zero(), A::zero(), A::one(),  A::zero();
-        A::zero(), A::one(),  A::zero(), A::zero();
     ]
 }
 
