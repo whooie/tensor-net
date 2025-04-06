@@ -165,8 +165,6 @@ pub type TensorResult<T> = Result<T, TensorError>;
 ///             // ...
 ///         }
 ///     }
-///
-///     fn label(&self) -> String { format!("{self:?}") }
 /// }
 /// ```
 /// This representation is safer because it encodes relevant information in
@@ -183,8 +181,6 @@ pub type TensorResult<T> = Result<T, TensorError>;
 ///
 /// impl Idx for Index {
 ///     fn dim(&self) -> usize { self.1 }
-///
-///     fn label(&self) -> String { format!("{self:?}") }
 /// }
 /// ```
 /// This representation allows for dynamic mutation of a tensor network, but
@@ -204,7 +200,9 @@ pub trait Idx: Clone + Eq + Hash + std::fmt::Debug {
 
     /// Return an identifying label for the index. This method is used only for
     /// printing purposes.
-    fn label(&self) -> String;
+    ///
+    /// The default implementation renders `self` using `Debug`.
+    fn label(&self) -> String { format!("{self:?}") }
 }
 
 /// A dynamically dimensioned tensor index type.
