@@ -17,7 +17,6 @@ pub mod lazymps;
 pub mod gate;
 pub mod circuit;
 
-pub mod gamma;
 pub mod mps_na;
 pub mod gate_na;
 
