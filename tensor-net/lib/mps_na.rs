@@ -468,42 +468,93 @@ where T: ComplexScalar
     }
 }
 
-impl<T> fmt::Display for Gamma<T>
-where T: na::Scalar + fmt::Display
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (m, s, n) = self.dims();
-        writeln!(f, "{{ {}, {}, {} }}", m, s, n)?;
-        if let GData::LFused(mat) = &self.data {
-            for (v, g__v) in mat.column_iter().enumerate() {
-                let row_mat = g__v.reshape_generic(na::Dyn(m), na::Dyn(s));
-                for (u, gu_v) in row_mat.row_iter().enumerate() {
-                    write!(f, "[")?;
-                    for (k, gusv) in gu_v.iter().enumerate() {
-                        fmt::Display::fmt(gusv, f)?;
-                        if k < s { write!(f, ", ")?; }
+macro_rules! impl_fmt_gamma {
+    ( $trait: path, $fmt_str_noprec: expr, $fmt_str_prec: expr ) => {
+        impl<T> $trait for Gamma<T>
+        where T: na::Scalar + $trait
+        {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fn val_width<U>(val: &U, f: &mut fmt::Formatter<'_>) -> usize
+                where U: na::Scalar + $trait
+                {
+                    match f.precision() {
+                        Some(prec) =>
+                            format!($fmt_str_prec, val, prec).chars().count(),
+                        None =>
+                            format!($fmt_str_noprec, val).chars().count(),
                     }
-                    write!(f, "] u={} v={}", u, v)?;
-                    if v < n - 1 && u < m - 1 { writeln!(f)?; }
                 }
-            }
-        } else if let GData::RFused(mat) = &self.data {
-            for v in 0..n {
-                let row_mat = mat.columns_range(s * v .. s * (v + 1));
-                for (u, gu_v) in row_mat.row_iter().enumerate() {
-                    write!(f, "[")?;
-                    for (k, gusv) in gu_v.iter().enumerate() {
-                        fmt::Display::fmt(gusv, f)?;
-                        if k < s { write!(f, ", ")?; }
+
+                let (m, s, n) = self.dims();
+                writeln!(f, "{{ {}, {}, {} }}", m, s, n)?;
+                if let GData::LFused(mat) = &self.data {
+                    let max_length: usize =
+                        mat.iter()
+                        .fold(0, |acc, elem| acc.max(val_width(elem, f)));
+                    let max_length_with_space = max_length + 1;
+
+                    for (v, g__v) in mat.column_iter().enumerate() {
+                        let row_mat = g__v.reshape_generic(na::Dyn(m), na::Dyn(s));
+                        for (u, gu_v) in row_mat.row_iter().enumerate() {
+                            write!(f, "[")?;
+                            for gusv in gu_v.iter() {
+                                let number_length = val_width(gusv, f) + 1;
+                                let pad = max_length_with_space - number_length;
+                                write!(f, " {:>thepad$}", "", thepad = pad)?;
+                                match f.precision() {
+                                    Some(prec) => {
+                                        write!(f, $fmt_str_prec, gusv, prec)?;
+                                    },
+                                    None => {
+                                        write!(f, $fmt_str_noprec, gusv)?;
+                                    },
+                                }
+                            }
+                            write!(f, " ] u={} v={}", u, v)?;
+                            if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                        }
                     }
-                    write!(f, "] u={} v={}", u, v)?;
-                    if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                } else if let GData::RFused(mat) = &self.data {
+                    let max_length: usize =
+                        mat.iter()
+                        .fold(0, |acc, elem| acc.max(val_width(elem, f)));
+                    let max_length_with_space = max_length + 1;
+
+                    for v in 0..n {
+                        let row_mat = mat.columns_range(s * v .. s * (v + 1));
+                        for (u, gu_v) in row_mat.row_iter().enumerate() {
+                            write!(f, "[")?;
+                            for gusv in gu_v.iter() {
+                                let number_length = val_width(gusv, f) + 1;
+                                let pad = max_length_with_space - number_length;
+                                write!(f, " {:>thepad$}", "", thepad = pad)?;
+                                match f.precision() {
+                                    Some(prec) => {
+                                        write!(f, $fmt_str_prec, gusv, prec)?;
+                                    },
+                                    None => {
+                                        write!(f, $fmt_str_noprec, gusv)?;
+                                    },
+                                }
+                            }
+                            write!(f, " ] u={} v={}", u, v)?;
+                            if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                        }
+                    }
                 }
+                Ok(())
             }
         }
-        Ok(())
     }
 }
+impl_fmt_gamma!(fmt::Display, "{}", "{:.1$}");
+impl_fmt_gamma!(fmt::LowerExp, "{:e}", "{:.1$e}");
+impl_fmt_gamma!(fmt::UpperExp, "{:E}", "{:.1$E}");
+impl_fmt_gamma!(fmt::Octal, "{:o}", "{:1$o}");
+impl_fmt_gamma!(fmt::LowerHex, "{:x}", "{:1$x}");
+impl_fmt_gamma!(fmt::UpperHex, "{:X}", "{:1$X}");
+impl_fmt_gamma!(fmt::Binary, "{:b}", "{:.1$b}");
+impl_fmt_gamma!(fmt::Pointer, "{:p}", "{:.1$p}");
 
 /// Specify a method to set the bond dimension from a Schmidt decomposition.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1765,78 +1816,136 @@ where
     }
 }
 
-fn fmt_gamma<A>(
-    gamma: &Gamma<A>,
-    indent: usize,
-    indent_str: &str,
-    f: &mut fmt::Formatter<'_>,
-) -> fmt::Result
-where A: na::Scalar + fmt::Display
-{
-    let tab = indent_str.repeat(indent);
-    let (m, s, n) = gamma.dims();
-    if let GData::LFused(mat) = gamma.data() {
-        for (v, g__v) in mat.column_iter().enumerate() {
-            let row_mat = g__v.reshape_generic(na::Dyn(m), na::Dyn(s));
-            for (u, gu_v) in row_mat.row_iter().enumerate() {
-                write!(f, "{}[", tab)?;
-                for (k, gusv) in gu_v.iter().enumerate() {
-                    fmt::Display::fmt(gusv, f)?;
-                    if k < s { write!(f, ", ")?; }
+macro_rules! impl_fmt_mps {
+    ( $trait: path, $fmt_str_noprec: expr, $fmt_str_prec: expr ) => {
+        impl<T, A> $trait for MPS<T, A>
+        where
+            T: Idx,
+            A: ComplexScalar + $trait,
+            A::Re: $trait,
+        {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fn fmt_gamma_indented<B>(
+                    gamma: &Gamma<B>,
+                    indent: usize,
+                    indent_str: &str,
+                    f: &mut fmt::Formatter<'_>,
+                ) -> fmt::Result
+                where B: na::Scalar + $trait
+                {
+                    fn val_width<C>(val: &C, f: &mut fmt::Formatter<'_>)
+                        -> usize
+                    where C: na::Scalar + $trait
+                    {
+                        match f.precision() {
+                            Some(prec) =>
+                                format!($fmt_str_prec, val, prec)
+                                .chars().count(),
+                            None =>
+                                format!($fmt_str_noprec, val)
+                                .chars().count(),
+                        }
+                    }
+
+                    let tab = indent_str.repeat(indent);
+                    let (m, s, n) = gamma.dims();
+                    if let GData::LFused(mat) = gamma.data() {
+                        let max_length: usize =
+                            mat.iter()
+                            .fold(0, |acc, elem| acc.max(val_width(elem, f)));
+                        let max_length_with_space = max_length + 1;
+
+                        for (v, g__v) in mat.column_iter().enumerate() {
+                            let row_mat = g__v.reshape_generic(na::Dyn(m), na::Dyn(s));
+                            for (u, gu_v) in row_mat.row_iter().enumerate() {
+                                write!(f, "{}[", tab)?;
+                                for gusv in gu_v.iter() {
+                                    let number_length = val_width(gusv, f) + 1;
+                                    let pad =
+                                        max_length_with_space - number_length;
+                                    write!(f, " {:>thepad$}", "", thepad = pad)?;
+                                    match f.precision() {
+                                        Some(prec) => {
+                                            write!(f, $fmt_str_prec, gusv, prec)?;
+                                        },
+                                        None => {
+                                            write!(f, $fmt_str_noprec, gusv)?;
+                                        },
+                                    }
+                                }
+                                write!(f, " ] u={} v={}", u, v)?;
+                                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                            }
+                        }
+                    } else if let GData::RFused(mat) = gamma.data() {
+                        let max_length: usize =
+                            mat.iter()
+                            .fold(0, |acc, elem| acc.max(val_width(elem, f)));
+                        let max_length_with_space = max_length + 1;
+
+                        for v in 0..n {
+                            let row_mat = mat.columns_range(s * v .. s * (v + 1));
+                            for (u, gu_v) in row_mat.row_iter().enumerate() {
+                                write!(f, "{}[", tab)?;
+                                for gusv in gu_v.iter() {
+                                    let number_length = val_width(gusv, f) + 1;
+                                    let pad =
+                                        max_length_with_space - number_length;
+                                    write!(f, " {:>thepad$}", "", thepad = pad)?;
+                                    match f.precision() {
+                                        Some(prec) => {
+                                            write!(f, $fmt_str_prec, gusv, prec)?;
+                                        },
+                                        None => {
+                                            write!(f, $fmt_str_noprec, gusv)?;
+                                        },
+                                    }
+                                }
+                                write!(f, " ] u={} v={}", u, v)?;
+                                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                            }
+                        }
+                    }
+                    Ok(())
                 }
-                write!(f, "] u={} v={}", u, v)?;
-                if v < n - 1 && u < m - 1 { writeln!(f)?; }
-            }
-        }
-    } else if let GData::RFused(mat) = gamma.data() {
-        for v in 0..n {
-            let row_mat = mat.columns_range(s * v .. s * (v + 1));
-            for (u, gu_v) in row_mat.row_iter().enumerate() {
-                write!(f, "{}[", tab)?;
-                for (k, gusv) in gu_v.iter().enumerate() {
-                    fmt::Display::fmt(gusv, f)?;
-                    if k < s { write!(f, ", ")?; }
+
+                let iter =
+                    self.data.iter()
+                    .zip(&self.svals).zip(&self.idxs)
+                    .enumerate();
+                for (k, ((g, l), idx)) in iter {
+                    let (m, s, n) = g.dims();
+                    writeln!(f, "Γ[{}] :: {{ <{}>, {}::<{}>, <{}> }} =",
+                        k, m, idx.label(), s, n)?;
+                    fmt_gamma_indented(g, 1, "    ", f)?;
+                    writeln!(f)?;
+
+                    let llen = l.len();
+                    writeln!(f, "Λ[{}] :: {{ <{}> }} =", k, llen)?;
+                    write!(f, "    [")?;
+                    for (j, lj) in l.iter().enumerate() {
+                        write!(f, "{}", lj)?;
+                        if j < llen { write!(f, ", ")?; }
+                    }
+                    writeln!(f, "]")?;
                 }
-                write!(f, "] u={} v={}", u, v)?;
-                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                let (m, s, n) = self.data[self.n - 1].dims();
+                writeln!(f, "Γ[{}] :: {{ <{}>, {}::<{}>, <{}> }} =",
+                    self.n - 1, m, self.idxs[self.n - 1].label(), s, n)?;
+                fmt_gamma_indented(&self.data[self.n - 1], 1, "    ", f)?;
+                Ok(())
             }
         }
     }
-    Ok(())
 }
-
-impl<T, A> fmt::Display for MPS<T, A>
-where
-    T: Idx,
-    A: ComplexScalar + fmt::Display,
-    A::Re: fmt::Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let iter =
-            self.data.iter().zip(&self.svals).zip(&self.idxs).enumerate();
-        for (k, ((g, l), idx)) in iter {
-            let (m, s, n) = g.dims();
-            writeln!(f, "Γ[{}] :: {{ <{}>, {}::<{}>, <{}> }} =",
-                k, m, idx.label(), s, n)?;
-            fmt_gamma(g, 1, "    ", f)?;
-            writeln!(f)?;
-
-            let llen = l.len();
-            writeln!(f, "Λ[{}] :: {{ <{}> }} =", k, llen)?;
-            write!(f, "    [")?;
-            for (j, lj) in l.iter().enumerate() {
-                write!(f, "{}", lj)?;
-                if j < llen { write!(f, ", ")?; }
-            }
-            writeln!(f, "]")?;
-        }
-        let (m, s, n) = self.data[self.n - 1].dims();
-        writeln!(f, "Γ[{}] :: {{ <{}>, {}::<{}>, <{}> }} =",
-            self.n - 1, m, self.idxs[self.n - 1].label(), s, n)?;
-        fmt_gamma(&self.data[self.n - 1], 1, "    ", f)?;
-        Ok(())
-    }
-}
+impl_fmt_mps!(fmt::Display, "{}", "{:.1$}");
+impl_fmt_mps!(fmt::LowerExp, "{:e}", "{:.1$e}");
+impl_fmt_mps!(fmt::UpperExp, "{:E}", "{:.1$E}");
+impl_fmt_mps!(fmt::Octal, "{:o}", "{:1$o}");
+impl_fmt_mps!(fmt::LowerHex, "{:x}", "{:1$x}");
+impl_fmt_mps!(fmt::UpperHex, "{:X}", "{:1$X}");
+impl_fmt_mps!(fmt::Binary, "{:b}", "{:.1$b}");
+impl_fmt_mps!(fmt::Pointer, "{:p}", "{:.1$p}");
 
 #[allow(clippy::mem_replace_with_uninit)]
 unsafe fn replace_zeroed<T>(loc: &mut T) -> T {
