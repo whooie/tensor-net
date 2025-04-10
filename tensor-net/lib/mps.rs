@@ -46,7 +46,7 @@
 //! use num_complex::Complex64 as C64;
 //! use num_traits::{ Zero, One };
 //! use rand::thread_rng;
-//! use tensor_net::mps_na::*;
+//! use tensor_net::mps::*;
 //! use tensor_net::tensor::Idx;
 //!
 //! // `Q(k)` is a qubit degree of freedom for the `k`-th particle.
@@ -110,10 +110,10 @@ use rand::{
 use thiserror::Error;
 use crate::{
     ComplexScalar,
-    circuit_na::{ Q, Uni, Meas, Op, Outcome },
+    circuit::{ Q, Uni, Meas, Op, Outcome },
     // gamma::{ Gamma, GData, BondDim, Schmidt },
-    gate_na::Gate,
-    tensor_na::Idx,
+    gate::Gate,
+    tensor::Idx,
 };
 
 #[derive(Debug, Error)]

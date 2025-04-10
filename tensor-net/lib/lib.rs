@@ -17,11 +17,11 @@ use num_traits::{ Float, Zero };
 // pub mod gate;
 // pub mod circuit;
 
-pub mod tensor_na;
+pub mod tensor;
 
-pub mod mps_na;
-pub mod gate_na;
-pub mod circuit_na;
+pub mod mps;
+pub mod gate;
+pub mod circuit;
 
 /// Extension trait for [`ComplexFloat`].
 pub trait ComplexFloatExt: ComplexFloat /*+ std::fmt::Debug*/

@@ -13,9 +13,9 @@ use rand::{ Rng, thread_rng };
 use serde::{ Serialize, Deserialize };
 use thiserror::Error;
 use crate::{
-    gate_na::{ Clifford, Gate },
-    mps_na::{ MPS, MPSError, MPSResult },
-    tensor_na::Idx,
+    gate::{ Clifford, Gate },
+    mps::{ MPS, MPSError, MPSResult },
+    tensor::Idx,
 };
 
 #[derive(Debug, Error)]
