@@ -11,8 +11,6 @@ edition = "2021"
 crossbeam = "0.8.4"
 itertools = "0.12.1"
 nalgebra = { version = "0.33.2", features = ["serde-serialize"] }
-ndarray = "0.15.6"
-ndarray-linalg = { version = "0.16.0", features = ["openblas"] }
 num-complex = "0.4.5"
 num-traits = "0.2.19"
 num_cpus = "1.16.0"

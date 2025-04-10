@@ -1,5 +1,5 @@
 //! Definitions of common one- and two-qubit gates for use with
-//! [`MPS`][crate::mps_na::MPS] and [`MPSCircuit`][crate::circuit::MPSCircuit].
+//! [`MPS`][crate::mps_na::MPS].
 //!
 //! Note that all multi-qubit unitary matrices conform to *column-major* (i.e.
 //! little-endian) ordering of basis elements.
