@@ -378,14 +378,11 @@ where T: na::ComplexField
             let op_tr = op.transpose();
             let data = unsafe { self.make_lfused() };
             data.column_iter_mut()
-                .for_each(|mut col| {
-                    let col_mat: na::DMatrix<T> =
-                        col.clone_owned()
-                        .reshape_generic(na::Dyn(m), na::Dyn(s));
-                    let mul = col_mat * &op_tr;
-                    let flat =
-                        mul.reshape_generic(na::Dyn(m * s), na::Const::<1>);
-                    col.copy_from(&flat);
+                .for_each(|col| {
+                    let mut col_mat =
+                        col.reshape_generic(na::Dyn(m), na::Dyn(s));
+                    let mul = &col_mat * &op_tr;
+                    col_mat.copy_from(&mul);
                 });
         }
     }
@@ -874,8 +871,8 @@ where
             };
         let i1: usize =
             match part.end_bound() {
-                Bound::Included(i) => *i,
-                Bound::Excluded(i) => i.saturating_sub(1),
+                Bound::Included(i) => (*i).min(self.n - 1),
+                Bound::Excluded(i) => (*i).saturating_sub(1).min(self.n - 1),
                 Bound::Unbounded   => self.n - 1,
             };
         if i0 > i1 {
@@ -1026,11 +1023,11 @@ where A: ComplexScalar
     }
 
     /// Compute the `a`-th Rényi entropy across a bipartition placed on the
-    /// `b`-th bond in the Schmidt basis.
+    /// `b`-th bond.
     ///
     /// Returns the Von-Neumann entropy for `a == 1` and `None` if `b` is out of
     /// bounds.
-    pub fn entropy_ry_schmidt(&self, a: A::Re, b: usize) -> Option<A::Re> {
+    pub fn entropy_ry(&self, a: A::Re, b: usize) -> Option<A::Re> {
         if a.is_one() {
             self.entropy_vn(b)
         } else {
