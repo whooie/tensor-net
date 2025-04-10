@@ -150,8 +150,8 @@ impl AsRef<Vec<Meas>> for MeasLayer {
     fn as_ref(&self) -> &Vec<Meas> { self.get() }
 }
 
-pub mod clifford;
-pub mod haar;
+// pub mod clifford;
+// pub mod haar;
 
 // pub mod systems;
 

@@ -7,3 +7,4 @@
 tensor-net/examples/*
 tensor-net/Cargo.lock
 **/__pycache__/*
+**/output/**
