@@ -19,6 +19,7 @@ pub mod circuit;
 
 pub mod mps_na;
 pub mod gate_na;
+pub mod circuit_na;
 
 /// Extension trait for [`ComplexFloat`].
 pub trait ComplexFloatExt: ComplexFloat /*+ std::fmt::Debug*/

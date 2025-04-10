@@ -110,7 +110,7 @@ use rand::{
 use thiserror::Error;
 use crate::{
     ComplexScalar,
-    circuit::Q,
+    circuit_na::{ Q, Uni, Meas, Op, Outcome },
     // gamma::{ Gamma, GData, BondDim, Schmidt },
     gate_na::Gate,
     tensor_na::Idx,
@@ -1534,11 +1534,20 @@ where
     pub fn measure<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
     where R: Rng + ?Sized
     {
+        self.measure_prob(k, rng).map(|(p, _)| p)
+    }
+
+    /// Like [`measure`][Self::measure], but returning the probability of the
+    /// outcome alongside the outcome itself.
+    pub fn measure_prob<R>(&mut self, k: usize, rng: &mut R)
+        -> Option<(usize, A::Re)>
+    where R: Rng + ?Sized
+    {
         if k >= self.n { return None; }
         let (p, prob) = self.sample_state(k, rng);
         self.project_state(k, p, prob.sqrt());
         self.refactor_sweep();
-        Some(p)
+        Some((p, prob))
     }
 
     /// Perform a projective measurement on the `k`-th particle, post-selected
@@ -1546,10 +1555,18 @@ where
     ///
     /// If `k` is out of bounds or `p` is an invalid quantum number, do nothing.
     pub fn measure_postsel(&mut self, k: usize, p: usize) {
-        if k >= self.n || p >= self.idxs[k].dim() { return; }
+        self.measure_postsel_prob(k, p);
+    }
+
+    /// Like [`measure`][Self::measure_postsel], but returning the probability
+    /// of the outcome alongside the outcome itself.
+    pub fn measure_postsel_prob(&mut self, k: usize, p: usize) -> Option<A::Re>
+    {
+        if k >= self.n || p >= self.idxs[k].dim() { return None; }
         let prob = self.local_prob(k, p);
         self.project_state(k, p, prob.sqrt());
         self.refactor_sweep();
+        Some(prob)
     }
 }
 
@@ -1629,23 +1646,88 @@ impl MPS<Q, C64> {
         self
     }
 
-    where R: Rng + ?Sized
-    {
-        let res = self.measure(k, rng);
-        if let Some(1) = res {
-            self.apply_op1(k, Lazy::force(&gate::XMAT))
-                .unwrap();
+    /// Apply a unitary in place.
+    ///
+    /// Does nothing if any qubit indices are out of bounds.
+    pub fn apply_uni(&mut self, uni: &Uni) -> MPSResult<&mut Self> {
+        match uni {
+            Uni::Gate(g) => Ok(self.apply_gate(g)),
+            Uni::Mat(k, mat) => {
+                if mat.shape() == (2, 2) {
+                    self.apply_op1(*k, mat)
+                } else if mat.shape() == (4, 4) {
+                    self.apply_op2(*k, mat)
+                } else {
+                    Err(OperatorIncompatibleShape)
+                }
+            },
         }
-        res
     }
 
-    /// Like [`measure_postsel`][Self::measure_postsel], but deterministically
-    /// reset the state to ∣0⟩ after measurement.
-    pub fn measure_postsel_reset(&mut self, k: usize, p: usize) {
-        self.measure_postsel(k, p);
-        if p != 0 {
-            self.apply_op1(k, Lazy::force(&gate::XMAT))
-                .unwrap();
+    /// Like [`apply_uni`][Self::apply_uni], but taking a cached random
+    /// generator.
+    pub fn apply_uni_rng<R>(&mut self, uni: &Uni, rng: &mut R)
+        -> MPSResult<&mut Self>
+    where R: Rng + ?Sized
+    {
+        match uni {
+            Uni::Gate(g) => Ok(self.apply_gate_rng(g, rng)),
+            Uni::Mat(k, mat) => {
+                if mat.shape() == (2, 2) {
+                    self.apply_op1(*k, mat)
+                } else if mat.shape() == (4, 4) {
+                    self.apply_op2(*k, mat)
+                } else {
+                    Err(OperatorIncompatibleShape)
+                }
+            },
+        }
+    }
+
+    /// Apply a measurement in place.
+    ///
+    /// Does nothing if any qubit indices are out of bounds.
+    pub fn apply_meas<R>(&mut self, meas: &Meas, rng: &mut R) -> Option<Outcome>
+    where R: Rng + ?Sized
+    {
+        self.apply_meas_prob(meas, rng).map(|(out, _)| out)
+    }
+
+    /// Like [`apply_meas`][Self::apply_meas], but also returning the
+    /// probability of the outcome.
+    pub fn apply_meas_prob<R>(&mut self, meas: &Meas, rng: &mut R)
+        -> Option<(Outcome, f64)>
+    where R: Rng + ?Sized
+    {
+        match meas {
+            Meas::Rand(k) =>
+                self.measure_prob(*k, rng)
+                .map(|(p, prob)| (p.into(), prob)),
+            Meas::Proj(k, p) =>
+                self.measure_postsel_prob(*k, *p as usize)
+                    .map(|prob| (*p, prob)),
+        }
+    }
+
+    /// Apply a general [`Op`] in place, returning the outcomes from any valid
+    /// measurements, or errors from any invalid unitaries.
+    pub fn apply_op<R>(&mut self, op: &Op, rng: &mut R)
+        -> MPSResult<Option<Outcome>>
+    where R: Rng + ?Sized
+    {
+        self.apply_op_prob(op, rng)
+            .map(|maybe_meas_out| maybe_meas_out.map(|(p, _)| p))
+    }
+
+    /// Like [`apply_op`][Self::apply_op], but also returning the probability of
+    /// any measurements.
+    pub fn apply_op_prob<R>(&mut self, op: &Op, rng: &mut R)
+        -> MPSResult<Option<(Outcome, f64)>>
+    where R: Rng + ?Sized
+    {
+        match op {
+            Op::Uni(uni) => self.apply_uni(uni).map(|_| None),
+            Op::Meas(meas) => Ok(self.apply_meas_prob(meas, rng)),
         }
     }
 }
