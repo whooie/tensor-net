@@ -4,6 +4,7 @@
 //! Note that all multi-qubit unitary matrices conform to *column-major* (i.e.
 //! little-endian) ordering of basis elements.
 
+use std::borrow::Cow;
 use itertools::Itertools;
 use nalgebra as na;
 use num_complex::Complex64 as C64;
@@ -11,8 +12,10 @@ use num_traits::{ Float, One };
 use once_cell::sync::Lazy;
 use rand::{
     Rng,
+    thread_rng,
     distributions::Distribution,
 };
+use serde::{ Serialize, Deserialize };
 use statrs::distribution::Normal;
 use crate::ComplexScalar;
 
@@ -20,24 +23,70 @@ use crate::ComplexScalar;
 ///
 /// Two-qubit gates are limited to nearest neighbors, with the held value always
 /// referring to the leftmost of the two relevant qubit indices.
-#[derive(Copy, Clone, Debug, PartialEq)]
+///
+/// Here, we take "rotation about *n*" (where *n* is one of {*x*, *y*, *z*}, as
+/// in `XRot`, `S`, etc.) to mean the application of a *relative* phase between
+/// the qubit states in the *n* basis, i.e.
+/// ```text
+/// X(θ) = ∣+ ⟩⟨+ ∣ + exp(i θ) ∣– ⟩⟨– ∣
+/// Y(θ) = ∣+i⟩⟨+i∣ + exp(i θ) ∣–i⟩⟨–i∣
+/// Z(θ) = ∣ 0⟩⟨ 0∣ + exp(i θ) ∣ 1⟩⟨ 1∣
+/// ```
+/// as represented in the Z basis, where
+/// ```text
+/// ∣± ⟩ = (∣0⟩ ±   ∣1⟩) / √2
+/// ∣±i⟩ = (∣0⟩ ± i ∣1⟩) / √2
+/// ```
+///
+/// These definitions are distinct from the alternative forms of these
+/// operations, which are defined by exponentiating the corresponding Pauli
+/// matrix:
+/// ```text
+/// RX(θ) = exp(-i X θ / 2)
+/// RY(θ) = exp(-i Y θ / 2)
+/// RZ(θ) = exp(-i Z θ / 2)
+/// ```
+/// The exponentiated versions are available as `*Exp` variants.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Gate {
-    /// A gate formed from an Euler angle decomposition.
-    U(usize, f64, f64, f64),
-    /// Hadamard.
+    /// Hadamard gate.
     H(usize),
-    /// π rotation about X.
+    /// π rotation about *x*.
     X(usize),
-    /// π rotation about Z.
+    /// π rotation about *y*.
+    Y(usize),
+    /// π rotation about *z*.
     Z(usize),
-    /// π/2 rotation about Z.
+    /// π/4 rotation about *z*.
+    T(usize),
+    /// –π/4 rotation about *z*.
+    TInv(usize),
+    /// π/2 rotation about *z*.
     S(usize),
-    /// –π/2 rotation about Z.
+    /// –π/2 rotation about *z*.
     SInv(usize),
-    /// An arbitrary rotation about X.
+    /// An arbitrary rotation about *x*.
     XRot(usize, f64),
-    /// An arbitrary rotation about Z.
+    /// An arbitrary rotation about *y*.
+    YRot(usize, f64),
+    /// An arbitrary rotation about *z*.
     ZRot(usize, f64),
+    /// Exponentiation of `X` to an arbitrary angle.
+    XExp(usize, f64),
+    /// Exponentiation of `Y` to an arbitrary angle.
+    YExp(usize, f64),
+    /// Exponentiation of `Z` to an arbitrary angle.
+    ZExp(usize, f64),
+    /// A gate formed from an Euler angle decomposition.
+    ///
+    /// ```text
+    /// U(α, β, γ) = Z(γ) X(β) Z(α)
+    /// ```
+    U(usize, f64, f64, f64),
+    /// A random element from the one-qubit Clifford group.
+    Cliff1(usize),
+    /// A Haar-random one-qubit unitary.
+    Haar1(usize),
     /// Z-controlled π rotation about X.
     ///
     /// `CX(k)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
@@ -45,11 +94,67 @@ pub enum Gate {
     CX(usize),
     /// Like `CX`, but with the control and target qubits reversed.
     CXRev(usize),
+    /// Z-controlled π rotation about Y.
+    ///
+    /// `CY(k)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CY(usize),
+    /// Like `CY`, but with the control and target qubits reversed.
+    CYRev(usize),
     /// Z-controlled π rotation about Z.
     ///
     /// `CZ(k)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
     /// control.
     CZ(usize),
+    /// Z-controlled arbitrary rotation about *x*.
+    ///
+    /// `CXRot(k, _)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CXRot(usize, f64),
+    /// Like `CXRot`, but with the control and target qubits reversed.
+    CXRotRev(usize, f64),
+    /// Z-controlled arbitrary rotation about *y*.
+    ///
+    /// `CYRot(k, _)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CYRot(usize, f64),
+    /// Like `CYRot`, but with the control and target qubits reversed.
+    CYRotRev(usize, f64),
+    /// Z-controlled arbitrary rotation about *z*.
+    ///
+    /// `CZRot(k, _)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CZRot(usize, f64),
+    /// Z-controlled exponentiation of `X` to an arbitrary angle.
+    ///
+    /// `CXExp(k, _)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CXExp(usize, f64),
+    /// Like `CXRot`, but with the control and target qubits reversed.
+    CXExpRev(usize, f64),
+    /// Z-controlled exponentiation of `Y` to an arbitrary angle.
+    ///
+    /// `CYExp(k, _)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CYExp(usize, f64),
+    /// Like `CYRot`, but with the control and target qubits reversed.
+    CYExpRev(usize, f64),
+    /// Z-controlled exponentiation of `Z` to an arbitrary angle.
+    ///
+    /// `CZExp(k, _)` rotates the `k + 1`-th qubit with the `k`-th qubit as the
+    /// control.
+    CZExp(usize, f64),
+    /// Mølmer-Sørensen gate. This gate uses the *xx* definition.
+    MS(usize),
+    /// Root-swap gate.
+    SqrtSwap(usize),
+    /// Swap gate.
+    Swap(usize),
+    /// A random element from the two-qubit Clifford group.
+    ///
+    /// `Cliff2(k)` applies the unitary to the subspace corresponding to the
+    /// `k`-th` and `k + 1`-th qubits.
+    Cliff2(usize),
     /// A Haar-random two-qubit unitary.
     ///
     /// `Haar2(k)` applies the unitary to the subspace corresponding to the
@@ -58,17 +163,23 @@ pub enum Gate {
 }
 
 impl Gate {
-    /// Return `true` if `self` is `U`.
-    pub fn is_u(&self) -> bool { matches!(self, Self::U(..)) }
-
     /// Return `true` if `self` is `H`.
     pub fn is_h(&self) -> bool { matches!(self, Self::H(..)) }
 
     /// Return `true` if `self` is `X`.
     pub fn is_x(&self) -> bool { matches!(self, Self::X(..)) }
 
+    /// Return `true` if `self` is `Y`.
+    pub fn is_y(&self) -> bool { matches!(self, Self::Y(..)) }
+
     /// Return `true` if `self` is `Z`.
     pub fn is_z(&self) -> bool { matches!(self, Self::Z(..)) }
+
+    /// Return `true` if `self` is `T`.
+    pub fn is_t(&self) -> bool { matches!(self, Self::T(..)) }
+
+    /// Return `true` if `self` is `TInv`.
+    pub fn is_tinv(&self) -> bool { matches!(self, Self::TInv(..)) }
 
     /// Return `true` if `self` is `S`.
     pub fn is_s(&self) -> bool { matches!(self, Self::S(..)) }
@@ -79,8 +190,29 @@ impl Gate {
     /// Return `true` if `self` is `XRot`.
     pub fn is_xrot(&self) -> bool { matches!(self, Self::XRot(..)) }
 
+    /// Return `true` if `self` is `YRot`.
+    pub fn is_yrot(&self) -> bool { matches!(self, Self::YRot(..)) }
+
     /// Return `true` if `self` is `ZRot`.
     pub fn is_zrot(&self) -> bool { matches!(self, Self::ZRot(..)) }
+
+    /// Return `true` if `self` is `XExp`.
+    pub fn is_xexp(&self) -> bool { matches!(self, Self::XExp(..)) }
+
+    /// Return `true` if `self` is `YExp`.
+    pub fn is_yexp(&self) -> bool { matches!(self, Self::YExp(..)) }
+
+    /// Return `true` if `self` is `ZExp`.
+    pub fn is_zexp(&self) -> bool { matches!(self, Self::ZExp(..)) }
+
+    /// Return `true` if `self` is `U`.
+    pub fn is_u(&self) -> bool { matches!(self, Self::U(..)) }
+
+    /// Return `true` if `self` is `Cliff1`.
+    pub fn is_cliff1(&self) -> bool { matches!(self, Self::Cliff1(..)) }
+
+    /// Return `true` if `self` is `Haar1`.
+    pub fn is_haar1(&self) -> bool { matches!(self, Self::Haar1(..)) }
 
     /// Return `true` if `self` is `CX`.
     pub fn is_cx(&self) -> bool { matches!(self, Self::CX(..)) }
@@ -88,87 +220,372 @@ impl Gate {
     /// Return `true` if `self` is `CXRev`.
     pub fn is_cxrev(&self) -> bool { matches!(self, Self::CXRev(..)) }
 
+    /// Return `true` if `self` is `CY`.
+    pub fn is_cy(&self) -> bool { matches!(self, Self::CY(..)) }
+
+    /// Return `true` if `self` is `CYRev`.
+    pub fn is_cyrev(&self) -> bool { matches!(self, Self::CYRev(..)) }
+
     /// Return `true` if `self` is `CZ`.
     pub fn is_cz(&self) -> bool { matches!(self, Self::CZ(..)) }
 
+    /// Return `true` if `self` is `CXRot`.
+    pub fn is_cxrot(&self) -> bool { matches!(self, Self::CXRot(..)) }
+
+    /// Return `true` if `self` is `CXRotRev`.
+    pub fn is_cxrotrev(&self) -> bool { matches!(self, Self::CXRotRev(..)) }
+
+    /// Return `true` if `self` is `CYRot`.
+    pub fn is_cyrot(&self) -> bool { matches!(self, Self::CYRot(..)) }
+
+    /// Return `true` if `self` is `CYRotRev`.
+    pub fn is_cyrotrev(&self) -> bool { matches!(self, Self::CYRotRev(..)) }
+
+    /// Return `true` if `self` is `CZRot`.
+    pub fn is_czrot(&self) -> bool { matches!(self, Self::CZRot(..)) }
+
+    /// Return `true` if `self` is `CXExp`.
+    pub fn is_cxexp(&self) -> bool { matches!(self, Self::CXExp(..)) }
+
+    /// Return `true` if `self` is `CXExpRev`.
+    pub fn is_cxexprev(&self) -> bool { matches!(self, Self::CXExpRev(..)) }
+
+    /// Return `true` if `self` is `CYExp`.
+    pub fn is_cyexp(&self) -> bool { matches!(self, Self::CYExp(..)) }
+
+    /// Return `true` if `self` is `CYExpRev`.
+    pub fn is_cyexprev(&self) -> bool { matches!(self, Self::CYExpRev(..)) }
+
+    /// Return `true` if `self` is `CZExp`.
+    pub fn is_czexp(&self) -> bool { matches!(self, Self::CZExp(..)) }
+
+    /// Return `true` if `self` is `MS`.
+    pub fn is_ms(&self) -> bool { matches!(self, Self::MS(..)) }
+
+    /// Return `true` if `self` is `SqrtSwap`.
+    pub fn is_sqrtswap(&self) -> bool { matches!(self, Self::SqrtSwap(..)) }
+
+    /// Return `true` if `self` is `Swap`.
+    pub fn is_swap(&self) -> bool { matches!(self, Self::Swap(..)) }
+
+    /// Return `true` if `self` is `Cliff2`.
+    pub fn is_cliff2(&self) -> bool { matches!(self, Self::Cliff2(..)) }
+
     /// Return `true` if `self` is `Haar2`.
     pub fn is_haar2(&self) -> bool { matches!(self, Self::Haar2(..)) }
+
+    /// Return `true` if `self` is a one-qubit gate.
+    pub fn is_q1(&self) -> bool {
+        matches!(
+            self,
+            Self::H(..)
+            | Self::X(..)
+            | Self::Y(..)
+            | Self::Z(..)
+            | Self::T(..)
+            | Self::TInv(..)
+            | Self::S(..)
+            | Self::SInv(..)
+            | Self::XRot(..)
+            | Self::YRot(..)
+            | Self::ZRot(..)
+            | Self::XExp(..)
+            | Self::YExp(..)
+            | Self::ZExp(..)
+            | Self::U(..)
+            | Self::Cliff1(..)
+            | Self::Haar1(..)
+        )
+    }
+
+    /// Return `true` if `self` is a two-qubit gate.
+    pub fn is_q2(&self) -> bool {
+        matches!(
+            self,
+            Self::CX(..)
+            | Self::CXRev(..)
+            | Self::CY(..)
+            | Self::CYRev(..)
+            | Self::CZ(..)
+            | Self::CXRot(..)
+            | Self::CXRotRev(..)
+            | Self::CYRot(..)
+            | Self::CYRotRev(..)
+            | Self::CZRot(..)
+            | Self::CXExp(..)
+            | Self::CXExpRev(..)
+            | Self::CYExp(..)
+            | Self::CYExpRev(..)
+            | Self::CZExp(..)
+            | Self::MS(..)
+            | Self::SqrtSwap(..)
+            | Self::Swap(..)
+            | Self::Cliff2(..)
+            | Self::Haar2(..)
+        )
+    }
 
     /// Return the [kind][G] of `self`.
     pub fn kind(&self) -> G {
         use G::*;
         use G1::*;
         use G2::*;
-        match *self {
-            Self::U(..) => Q1(U),
+        match self {
             Self::H(..) => Q1(H),
             Self::X(..) => Q1(X),
+            Self::Y(..) => Q1(Y),
             Self::Z(..) => Q1(Z),
+            Self::T(..) => Q1(T),
+            Self::TInv(..) => Q1(TInv),
             Self::S(..) => Q1(S),
             Self::SInv(..) => Q1(SInv),
             Self::XRot(..) => Q1(XRot),
+            Self::YRot(..) => Q1(YRot),
             Self::ZRot(..) => Q1(ZRot),
+            Self::XExp(..) => Q1(XExp),
+            Self::YExp(..) => Q1(YExp),
+            Self::ZExp(..) => Q1(ZExp),
+            Self::U(..) => Q1(U),
+            Self::Cliff1(..) => Q1(Cliff1),
+            Self::Haar1(..) => Q1(Haar1),
             Self::CX(..) => Q2(CX),
             Self::CXRev(..) => Q2(CXRev),
+            Self::CY(..) => Q2(CY),
+            Self::CYRev(..) => Q2(CYRev),
             Self::CZ(..) => Q2(CZ),
+            Self::CXRot(..) => Q2(CXRot),
+            Self::CXRotRev(..) => Q2(CXRotRev),
+            Self::CYRot(..) => Q2(CYRot),
+            Self::CYRotRev(..) => Q2(CYRotRev),
+            Self::CZRot(..) => Q2(CZRot),
+            Self::CXExp(..) => Q2(CXExp),
+            Self::CXExpRev(..) => Q2(CXExpRev),
+            Self::CYExp(..) => Q2(CYExp),
+            Self::CYExpRev(..) => Q2(CYExpRev),
+            Self::CZExp(..) => Q2(CZExp),
+            Self::MS(..) => Q2(MS),
+            Self::SqrtSwap(..) => Q2(SqrtSwap),
+            Self::Swap(..) => Q2(Swap),
+            Self::Cliff2(..) => Q2(Cliff2),
             Self::Haar2(..) => Q2(Haar2),
         }
-    }
-
-    /// Sample a single gate.
-    pub fn sample_single<G, R>(kind: G, op: G::QubitArg, rng: &mut R) -> Self
-    where
-        G: GateToken<Self>,
-        R: Rng + ?Sized,
-    {
-        kind.sample(op, rng)
-    }
-
-    /// Sample a random one-qubit Clifford gate.
-    pub fn sample_c1<R>(k: usize, rng: &mut R) -> Self
-    where R: Rng + ?Sized
-    {
-        use std::f64::consts::TAU;
-        match rng.gen_range(0..8) {
-            0 => Self::H(k),
-            1 => Self::X(k),
-            3 => Self::Z(k),
-            4 => Self::S(k),
-            5 => Self::SInv(k),
-            6 => Self::XRot(k, TAU * rng.gen::<f64>()),
-            7 => Self::ZRot(k, TAU * rng.gen::<f64>()),
-            _ => unreachable!(),
-        }
-    }
-
-    /// Sample a random gate uniformly from a set.
-    pub fn sample_from<'a, I, G, R>(kinds: I, arg: G::QubitArg, rng: &mut R)
-        -> Self
-    where
-        I: IntoIterator<Item = &'a G>,
-        G: GateToken<Self> + 'a,
-        R: Rng + ?Sized
-    {
-        let kinds: Vec<&G> = kinds.into_iter().collect();
-        let n = kinds.len();
-        kinds[rng.gen_range(0..n)].sample(arg, rng)
     }
 
     /// Return the index of the (left-most) qubit that the unitary acts on.
     pub fn idx(&self) -> usize {
         match self {
+            Self::H(k, ..) => *k,
+            Self::X(k, ..) => *k,
+            Self::Y(k, ..) => *k,
+            Self::Z(k, ..) => *k,
+            Self::T(k, ..) => *k,
+            Self::TInv(k, ..) => *k,
+            Self::S(k, ..) => *k,
+            Self::SInv(k, ..) => *k,
+            Self::XRot(k, ..) => *k,
+            Self::YRot(k, ..) => *k,
+            Self::ZRot(k, ..) => *k,
+            Self::XExp(k, ..) => *k,
+            Self::YExp(k, ..) => *k,
+            Self::ZExp(k, ..) => *k,
             Self::U(k, ..) => *k,
-            Self::H(k) => *k,
-            Self::X(k) => *k,
-            Self::Z(k) => *k,
-            Self::S(k) => *k,
-            Self::SInv(k) => *k,
-            Self::XRot(k, _) => *k,
-            Self::ZRot(k, _) => *k,
-            Self::CX(k) => *k,
-            Self::CXRev(k) => *k,
-            Self::CZ(k) => *k,
-            Self::Haar2(k) => *k,
+            Self::Cliff1(k, ..) => *k,
+            Self::Haar1(k, ..) => *k,
+            Self::CX(k, ..) => *k,
+            Self::CXRev(k, ..) => *k,
+            Self::CY(k, ..) => *k,
+            Self::CYRev(k, ..) => *k,
+            Self::CZ(k, ..) => *k,
+            Self::CXRot(k, ..) => *k,
+            Self::CXRotRev(k, ..) => *k,
+            Self::CYRot(k, ..) => *k,
+            Self::CYRotRev(k, ..) => *k,
+            Self::CZRot(k, ..) => *k,
+            Self::CXExp(k, ..) => *k,
+            Self::CXExpRev(k, ..) => *k,
+            Self::CYExp(k, ..) => *k,
+            Self::CYExpRev(k, ..) => *k,
+            Self::CZExp(k, ..) => *k,
+            Self::MS(k, ..) => *k,
+            Self::SqrtSwap(k, ..) => *k,
+            Self::Swap(k, ..) => *k,
+            Self::Cliff2(k, ..) => *k,
+            Self::Haar2(k, ..) => *k,
+        }
+    }
+
+    /// Return a mutable reference to the index of the (left-most) qubit that
+    /// the unitary acts on.
+    pub fn idx_mut(&mut self) -> &mut usize {
+        match self {
+            Self::H(k, ..) => k,
+            Self::X(k, ..) => k,
+            Self::Y(k, ..) => k,
+            Self::Z(k, ..) => k,
+            Self::T(k, ..) => k,
+            Self::TInv(k, ..) => k,
+            Self::S(k, ..) => k,
+            Self::SInv(k, ..) => k,
+            Self::XRot(k, ..) => k,
+            Self::YRot(k, ..) => k,
+            Self::ZRot(k, ..) => k,
+            Self::XExp(k, ..) => k,
+            Self::YExp(k, ..) => k,
+            Self::ZExp(k, ..) => k,
+            Self::U(k, ..) => k,
+            Self::Cliff1(k, ..) => k,
+            Self::Haar1(k, ..) => k,
+            Self::CX(k, ..) => k,
+            Self::CXRev(k, ..) => k,
+            Self::CY(k, ..) => k,
+            Self::CYRev(k, ..) => k,
+            Self::CZ(k, ..) => k,
+            Self::CXRot(k, ..) => k,
+            Self::CXRotRev(k, ..) => k,
+            Self::CYRot(k, ..) => k,
+            Self::CYRotRev(k, ..) => k,
+            Self::CZRot(k, ..) => k,
+            Self::CXExp(k, ..) => k,
+            Self::CXExpRev(k, ..) => k,
+            Self::CYExp(k, ..) => k,
+            Self::CYExpRev(k, ..) => k,
+            Self::CZExp(k, ..) => k,
+            Self::MS(k, ..) => k,
+            Self::SqrtSwap(k, ..) => k,
+            Self::Swap(k, ..) => k,
+            Self::Cliff2(k, ..) => k,
+            Self::Haar2(k, ..) => k,
+        }
+    }
+
+    /// Apply a mapping function to the index of the (left-most) qubit that the
+    /// unitary acts on.
+    pub fn map_idx<F>(mut self, f: F) -> Self
+    where F: FnOnce(usize) -> usize
+    {
+        let k = self.idx_mut();
+        *k = f(*k);
+        self
+    }
+
+    pub(crate) fn from_cliff2(cliff: CliffGate) -> Self {
+        match cliff {
+            CliffGate::H(k) => Self::H(k),
+            CliffGate::X(k) => Self::X(k),
+            CliffGate::Y(k) => Self::Y(k),
+            CliffGate::Z(k) => Self::Z(k),
+            CliffGate::S(k) => Self::S(k),
+            CliffGate::SInv(k) => Self::SInv(k),
+            CliffGate::CX(c, t) => {
+                assert!((c == 0 || c == 1) && (t == 0 || t == 1));
+                if c < t { Self::CX(c) } else { Self::CXRev(t) }
+            },
+            CliffGate::CZ(a, b) => {
+                assert!((a == 0 || a == 1) && (b == 0 || b == 1));
+                Self::CZ(a.min(b))
+            },
+            CliffGate::Swap(a, b) => {
+                assert!((a == 0 || a == 1) && (b == 0 || b == 1));
+                Self::Swap(a.min(b))
+            },
+        }
+    }
+
+    /// Return `self` as a matrix with the relevant target qubit index.
+    ///
+    /// Note that the `Cliff*` and `Haar*` variants will require random
+    /// sampling, for which the local thread generator will need to be acquired
+    /// here and then released immediately afterward. If you are creating
+    /// matrices for many of these variants, this will be inefficient and you
+    /// may wish to use [`into_matrix_rng`][Self::into_matrix_rng] instead,
+    /// which takes a cached generator as argument; this is also useful for
+    /// fixed-seed applications.
+    pub fn into_matrix(self) -> (usize, Cow<'static, na::DMatrix<C64>>) {
+        match self {
+            Self::H(k) => (k, Cow::Borrowed(Lazy::force(&HMAT))),
+            Self::X(k) => (k, Cow::Borrowed(Lazy::force(&XMAT))),
+            Self::Y(k) => (k, Cow::Borrowed(Lazy::force(&YMAT))),
+            Self::Z(k) => (k, Cow::Borrowed(Lazy::force(&ZMAT))),
+            Self::T(k) => (k, Cow::Borrowed(Lazy::force(&TMAT))),
+            Self::TInv(k) => (k, Cow::Borrowed(Lazy::force(&TINVMAT))),
+            Self::S(k) => (k, Cow::Borrowed(Lazy::force(&SMAT))),
+            Self::SInv(k) => (k, Cow::Borrowed(Lazy::force(&SINVMAT))),
+            Self::XRot(k, ang) => (k, Cow::Owned(make_xrot(ang))),
+            Self::YRot(k, ang) => (k, Cow::Owned(make_yrot(ang))),
+            Self::ZRot(k, ang) => (k, Cow::Owned(make_zrot(ang))),
+            Self::XExp(k, ang) => (k, Cow::Owned(make_xexp(ang))),
+            Self::YExp(k, ang) => (k, Cow::Owned(make_yexp(ang))),
+            Self::ZExp(k, ang) => (k, Cow::Owned(make_zexp(ang))),
+            Self::U(k, a, b, c) => (k, Cow::Owned(make_u(a, b, c))),
+            Self::Cliff1(k) => (k, Cow::Owned(make_cliff(1, &mut thread_rng()))),
+            Self::Haar1(k) => (k, Cow::Owned(make_haar(1, &mut thread_rng()))),
+            Self::CX(k) => (k, Cow::Borrowed(Lazy::force(&CXMAT))),
+            Self::CXRev(k) => (k, Cow::Borrowed(Lazy::force(&CXREVMAT))),
+            Self::CY(k) => (k, Cow::Borrowed(Lazy::force(&CYMAT))),
+            Self::CYRev(k) => (k, Cow::Borrowed(Lazy::force(&CYREVMAT))),
+            Self::CZ(k) => (k, Cow::Borrowed(Lazy::force(&CZMAT))),
+            Self::CXRot(k, ang) => (k, Cow::Owned(make_cxrot(ang))),
+            Self::CXRotRev(k, ang) => (k, Cow::Owned(make_cxrotrev(ang))),
+            Self::CYRot(k, ang) => (k, Cow::Owned(make_cyrot(ang))),
+            Self::CYRotRev(k, ang) => (k, Cow::Owned(make_cyrotrev(ang))),
+            Self::CZRot(k, ang) => (k, Cow::Owned(make_czrot(ang))),
+            Self::CXExp(k, ang) => (k, Cow::Owned(make_cxexp(ang))),
+            Self::CXExpRev(k, ang) => (k, Cow::Owned(make_cxexprev(ang))),
+            Self::CYExp(k, ang) => (k, Cow::Owned(make_cyexp(ang))),
+            Self::CYExpRev(k, ang) => (k, Cow::Owned(make_cyexprev(ang))),
+            Self::CZExp(k, ang) => (k, Cow::Owned(make_czexp(ang))),
+            Self::MS(k) => (k, Cow::Borrowed(Lazy::force(&MSMAT))),
+            Self::SqrtSwap(k) => (k, Cow::Borrowed(Lazy::force(&SQRTSWAPMAT))),
+            Self::Swap(k) => (k, Cow::Borrowed(Lazy::force(&SWAPMAT))),
+            Self::Cliff2(k) => (k, Cow::Owned(make_cliff(2, &mut thread_rng()))),
+            Self::Haar2(k) => (k, Cow::Owned(make_haar(2, &mut thread_rng()))),
+        }
+    }
+
+    /// Like [`into_matrix`][Self::into_matrix], but taking a cached random
+    /// generator as an argument.
+    pub fn into_matrix_rng<R>(self, rng: &mut R)
+        -> (usize, Cow<'static, na::DMatrix<C64>>)
+    where R: Rng + ?Sized
+    {
+        match self {
+            Self::H(k) => (k, Cow::Borrowed(Lazy::force(&HMAT))),
+            Self::X(k) => (k, Cow::Borrowed(Lazy::force(&XMAT))),
+            Self::Y(k) => (k, Cow::Borrowed(Lazy::force(&YMAT))),
+            Self::Z(k) => (k, Cow::Borrowed(Lazy::force(&ZMAT))),
+            Self::T(k) => (k, Cow::Borrowed(Lazy::force(&TMAT))),
+            Self::TInv(k) => (k, Cow::Borrowed(Lazy::force(&TINVMAT))),
+            Self::S(k) => (k, Cow::Borrowed(Lazy::force(&SMAT))),
+            Self::SInv(k) => (k, Cow::Borrowed(Lazy::force(&SINVMAT))),
+            Self::XRot(k, ang) => (k, Cow::Owned(make_xrot(ang))),
+            Self::YRot(k, ang) => (k, Cow::Owned(make_yrot(ang))),
+            Self::ZRot(k, ang) => (k, Cow::Owned(make_zrot(ang))),
+            Self::XExp(k, ang) => (k, Cow::Owned(make_xexp(ang))),
+            Self::YExp(k, ang) => (k, Cow::Owned(make_yexp(ang))),
+            Self::ZExp(k, ang) => (k, Cow::Owned(make_zexp(ang))),
+            Self::U(k, a, b, c) => (k, Cow::Owned(make_u(a, b, c))),
+            Self::Cliff1(k) => (k, Cow::Owned(make_cliff(1, rng))),
+            Self::Haar1(k) => (k, Cow::Owned(make_haar(1, rng))),
+            Self::CX(k) => (k, Cow::Borrowed(Lazy::force(&CXMAT))),
+            Self::CXRev(k) => (k, Cow::Borrowed(Lazy::force(&CXREVMAT))),
+            Self::CY(k) => (k, Cow::Borrowed(Lazy::force(&CYMAT))),
+            Self::CYRev(k) => (k, Cow::Borrowed(Lazy::force(&CYREVMAT))),
+            Self::CZ(k) => (k, Cow::Borrowed(Lazy::force(&CZMAT))),
+            Self::CXRot(k, ang) => (k, Cow::Owned(make_cxrot(ang))),
+            Self::CXRotRev(k, ang) => (k, Cow::Owned(make_cxrotrev(ang))),
+            Self::CYRot(k, ang) => (k, Cow::Owned(make_cyrot(ang))),
+            Self::CYRotRev(k, ang) => (k, Cow::Owned(make_cyrotrev(ang))),
+            Self::CZRot(k, ang) => (k, Cow::Owned(make_czrot(ang))),
+            Self::CXExp(k, ang) => (k, Cow::Owned(make_cxexp(ang))),
+            Self::CXExpRev(k, ang) => (k, Cow::Owned(make_cxexprev(ang))),
+            Self::CYExp(k, ang) => (k, Cow::Owned(make_cyexp(ang))),
+            Self::CYExpRev(k, ang) => (k, Cow::Owned(make_cyexprev(ang))),
+            Self::CZExp(k, ang) => (k, Cow::Owned(make_czexp(ang))),
+            Self::MS(k) => (k, Cow::Borrowed(Lazy::force(&MSMAT))),
+            Self::SqrtSwap(k) => (k, Cow::Borrowed(Lazy::force(&SQRTSWAPMAT))),
+            Self::Swap(k) => (k, Cow::Borrowed(Lazy::force(&SWAPMAT))),
+            Self::Cliff2(k) => (k, Cow::Owned(make_cliff(2, rng))),
+            Self::Haar2(k) => (k, Cow::Owned(make_haar(2, rng))),
         }
     }
 }
@@ -176,48 +593,93 @@ impl Gate {
 /// Identifier for a single one-qubit gate.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum G1 {
-    /// Euler angles
-    U,
-    /// Hadamard
+    /// Hadamard gate.
     H,
-    /// π rotation about X
+    /// π rotation about *x*.
     X,
-    /// π rotation about Z
+    /// π rotation about *y*.
+    Y,
+    /// π rotation about *z*.
     Z,
-    /// π/2 rotation about Z
+    /// π/4 rotation about *z*.
+    T,
+    /// –π/4 rotation about *z*.
+    TInv,
+    /// π/2 rotation about *z*.
     S,
-    /// -π/2 rotation about Z
+    /// –π/2 rotation about *z*.
     SInv,
-    /// Arbitrary rotation about X
+    /// An arbitrary rotation about *x*.
     XRot,
-    /// Arbitrary rotation about Z
+    /// An arbitrary rotation about *y*.
+    YRot,
+    /// An arbitrary rotation about *z*.
     ZRot,
+    /// Exponentiation of `X` to an arbitrary angle.
+    XExp,
+    /// Exponentiation of `Y` to an arbitrary angle.
+    YExp,
+    /// Exponentiation of `Z` to an arbitrary angle.
+    ZExp,
+    /// A gate formed from an Euler angle decomposition.
+    U,
+    /// A random element from the one-qubit Clifford group.
+    Cliff1,
+    /// A Haar-random one-qubit unitary.
+    Haar1,
 }
 
 impl G1 {
-    /// Returns `true` if `self` is `U`.
-    pub fn is_u(&self) -> bool { matches!(self, Self::U) }
-
-    /// Returns `true` if `self` is `H`.
+    /// Return `true` if `self` is `H`.
     pub fn is_h(&self) -> bool { matches!(self, Self::H) }
 
-    /// Returns `true` if `self` is `X`.
+    /// Return `true` if `self` is `X`.
     pub fn is_x(&self) -> bool { matches!(self, Self::X) }
 
-    /// Returns `true` if `self` is `Z`.
+    /// Return `true` if `self` is `Y`.
+    pub fn is_y(&self) -> bool { matches!(self, Self::Y) }
+
+    /// Return `true` if `self` is `Z`.
     pub fn is_z(&self) -> bool { matches!(self, Self::Z) }
 
-    /// Returns `true` if `self` is `S`.
+    /// Return `true` if `self` is `T`.
+    pub fn is_t(&self) -> bool { matches!(self, Self::T) }
+
+    /// Return `true` if `self` is `TInv`.
+    pub fn is_tinv(&self) -> bool { matches!(self, Self::TInv) }
+
+    /// Return `true` if `self` is `S`.
     pub fn is_s(&self) -> bool { matches!(self, Self::S) }
 
-    /// Returns `true` if `self` is `SInv`.
+    /// Return `true` if `self` is `SInv`.
     pub fn is_sinv(&self) -> bool { matches!(self, Self::SInv) }
 
-    /// Returns `true` if `self` is `XRot`.
+    /// Return `true` if `self` is `XRot`.
     pub fn is_xrot(&self) -> bool { matches!(self, Self::XRot) }
 
-    /// Returns `true` if `self` is `ZRot`.
+    /// Return `true` if `self` is `YRot`.
+    pub fn is_yrot(&self) -> bool { matches!(self, Self::YRot) }
+
+    /// Return `true` if `self` is `ZRot`.
     pub fn is_zrot(&self) -> bool { matches!(self, Self::ZRot) }
+
+    /// Return `true` if `self` is `XExp`.
+    pub fn is_xexp(&self) -> bool { matches!(self, Self::XExp) }
+
+    /// Return `true` if `self` is `YExp`.
+    pub fn is_yexp(&self) -> bool { matches!(self, Self::YExp) }
+
+    /// Return `true` if `self` is `ZExp`.
+    pub fn is_zexp(&self) -> bool { matches!(self, Self::ZExp) }
+
+    /// Return `true` if `self` is `U`.
+    pub fn is_u(&self) -> bool { matches!(self, Self::U) }
+
+    /// Return `true` if `self` is `Cliff1`.
+    pub fn is_cliff1(&self) -> bool { matches!(self, Self::Cliff1) }
+
+    /// Return `true` if `self` is `Haar1`.
+    pub fn is_haar1(&self) -> bool { matches!(self, Self::Haar1) }
 }
 
 /// Identifier for a single two-qubit gate.
@@ -225,26 +687,107 @@ impl G1 {
 pub enum G2 {
     /// Z-controlled π rotation about X.
     CX,
-    /// Z-controlled π rotation about X with control and target reversed.
+    /// Like `CX`, but with the control and target qubits reversed.
     CXRev,
+    /// Z-controlled π rotation about Y.
+    CY,
+    /// Like `CY`, but with the control and target qubits reversed.
+    CYRev,
     /// Z-controlled π rotation about Z.
     CZ,
+    /// Z-controlled arbitrary rotation about *x*.
+    CXRot,
+    /// Like `CXRot`, but with the control and target qubits reversed.
+    CXRotRev,
+    /// Z-controlled arbitrary rotation about *y*.
+    CYRot,
+    /// Like `CYRot`, but with the control and target qubits reversed.
+    CYRotRev,
+    /// Z-controlled arbitrary rotation about *z*.
+    CZRot,
+    /// Z-controlled exponentiation of `X` to an arbitrary angle.
+    CXExp,
+    /// Like `CXRot`, but with the control and target qubits reversed.
+    CXExpRev,
+    /// Z-controlled exponentiation of `Y` to an arbitrary angle.
+    CYExp,
+    /// Like `CYRot`, but with the control and target qubits reversed.
+    CYExpRev,
+    /// Z-controlled exponentiation of `Z` to an arbitrary angle.
+    CZExp,
+    /// Mølmer-Sørensen gate.
+    MS,
+    /// Root-swap gate.
+    SqrtSwap,
+    /// Swap gate.
+    Swap,
+    /// A random element from the two-qubit Clifford group.
+    Cliff2,
     /// A Haar-random two-qubit unitary.
     Haar2,
 }
 
 impl G2 {
-    /// Returns `true` if `self` is `CX`.
+    /// Return `true` if `self` is `CX`.
     pub fn is_cx(&self) -> bool { matches!(self, Self::CX) }
 
-    /// Returns `true` if `self` is `CXRev`.
+    /// Return `true` if `self` is `CXRev`.
     pub fn is_cxrev(&self) -> bool { matches!(self, Self::CXRev) }
 
-    /// Returns `true` if `self` is `CZ`.
+    /// Return `true` if `self` is `CY`.
+    pub fn is_cy(&self) -> bool { matches!(self, Self::CY) }
+
+    /// Return `true` if `self` is `CYRev`.
+    pub fn is_cyrev(&self) -> bool { matches!(self, Self::CYRev) }
+
+    /// Return `true` if `self` is `CZ`.
     pub fn is_cz(&self) -> bool { matches!(self, Self::CZ) }
 
-    /// Returns `true` if `self` is `Haar2`.
+    /// Return `true` if `self` is `CXRot`.
+    pub fn is_cxrot(&self) -> bool { matches!(self, Self::CXRot) }
+
+    /// Return `true` if `self` is `CXRotRev`.
+    pub fn is_cxrotrev(&self) -> bool { matches!(self, Self::CXRotRev) }
+
+    /// Return `true` if `self` is `CYRot`.
+    pub fn is_cyrot(&self) -> bool { matches!(self, Self::CYRot) }
+
+    /// Return `true` if `self` is `CYRotRev`.
+    pub fn is_cyrotrev(&self) -> bool { matches!(self, Self::CYRotRev) }
+
+    /// Return `true` if `self` is `CZRot`.
+    pub fn is_czrot(&self) -> bool { matches!(self, Self::CZRot) }
+
+    /// Return `true` if `self` is `CXExp`.
+    pub fn is_cxexp(&self) -> bool { matches!(self, Self::CXExp) }
+
+    /// Return `true` if `self` is `CXExpRev`.
+    pub fn is_cxexprev(&self) -> bool { matches!(self, Self::CXExpRev) }
+
+    /// Return `true` if `self` is `CYExp`.
+    pub fn is_cyexp(&self) -> bool { matches!(self, Self::CYExp) }
+
+    /// Return `true` if `self` is `CYExpRev`.
+    pub fn is_cyexprev(&self) -> bool { matches!(self, Self::CYExpRev) }
+
+    /// Return `true` if `self` is `CZExp`.
+    pub fn is_czexp(&self) -> bool { matches!(self, Self::CZExp) }
+
+    /// Return `true` if `self` is `MS`.
+    pub fn is_ms(&self) -> bool { matches!(self, Self::MS) }
+
+    /// Return `true` if `self` is `SqrtSwap`.
+    pub fn is_sqrtswap(&self) -> bool { matches!(self, Self::SqrtSwap) }
+
+    /// Return `true` if `self` is `Swap`.
+    pub fn is_swap(&self) -> bool { matches!(self, Self::Swap) }
+
+    /// Return `true` if `self` is `Cliff2`.
+    pub fn is_cliff2(&self) -> bool { matches!(self, Self::Cliff2) }
+
+    /// Return `true` if `self` is `Haar2`.
     pub fn is_haar2(&self) -> bool { matches!(self, Self::Haar2) }
+
 }
 
 /// Identifier for a single gate.
@@ -268,246 +811,379 @@ impl G {
     /// Returns `true` if `self` is `Q1`.
     pub fn is_q1(&self) -> bool { matches!(self, Self::Q1(..)) }
 
-    /// Returns `true` if `self` is `U`.
-    pub fn is_u(&self) -> bool { matches!(self, Self::Q1(g) if g.is_u()) }
+    /// Return `true` if `self` is `H`.
+    pub fn is_h(&self) -> bool { matches!(self, Self::Q1(G1::H)) }
 
-    /// Returns `true` if `self` is `H`.
-    pub fn is_h(&self) -> bool { matches!(self, Self::Q1(g) if g.is_h()) }
+    /// Return `true` if `self` is `X`.
+    pub fn is_x(&self) -> bool { matches!(self, Self::Q1(G1::X)) }
 
-    /// Returns `true` if `self` is `X`.
-    pub fn is_x(&self) -> bool { matches!(self, Self::Q1(g) if g.is_x()) }
+    /// Return `true` if `self` is `Y`.
+    pub fn is_y(&self) -> bool { matches!(self, Self::Q1(G1::Y)) }
 
-    /// Returns `true` if `self` is `Z`.
-    pub fn is_z(&self) -> bool { matches!(self, Self::Q1(g) if g.is_z()) }
+    /// Return `true` if `self` is `Z`.
+    pub fn is_z(&self) -> bool { matches!(self, Self::Q1(G1::Z)) }
 
-    /// Returns `true` if `self` is `S`.
-    pub fn is_s(&self) -> bool { matches!(self, Self::Q1(g) if g.is_s()) }
+    /// Return `true` if `self` is `T`.
+    pub fn is_t(&self) -> bool { matches!(self, Self::Q1(G1::T)) }
 
-    /// Returns `true` if `self` is `SInv`.
-    pub fn is_sinv(&self) -> bool { matches!(self, Self::Q1(g) if g.is_sinv()) }
+    /// Return `true` if `self` is `TInv`.
+    pub fn is_tinv(&self) -> bool { matches!(self, Self::Q1(G1::TInv)) }
 
-    /// Returns `true` if `self` is `XRot`.
-    pub fn is_xrot(&self) -> bool { matches!(self, Self::Q1(g) if g.is_xrot()) }
+    /// Return `true` if `self` is `S`.
+    pub fn is_s(&self) -> bool { matches!(self, Self::Q1(G1::S)) }
 
-    /// Returns `true` if `self` is `ZRot`.
-    pub fn is_zrot(&self) -> bool { matches!(self, Self::Q1(g) if g.is_zrot()) }
+    /// Return `true` if `self` is `SInv`.
+    pub fn is_sinv(&self) -> bool { matches!(self, Self::Q1(G1::SInv)) }
+
+    /// Return `true` if `self` is `XRot`.
+    pub fn is_xrot(&self) -> bool { matches!(self, Self::Q1(G1::XRot)) }
+
+    /// Return `true` if `self` is `YRot`.
+    pub fn is_yrot(&self) -> bool { matches!(self, Self::Q1(G1::YRot)) }
+
+    /// Return `true` if `self` is `ZRot`.
+    pub fn is_zrot(&self) -> bool { matches!(self, Self::Q1(G1::ZRot)) }
+
+    /// Return `true` if `self` is `XExp`.
+    pub fn is_xexp(&self) -> bool { matches!(self, Self::Q1(G1::XExp)) }
+
+    /// Return `true` if `self` is `YExp`.
+    pub fn is_yexp(&self) -> bool { matches!(self, Self::Q1(G1::YExp)) }
+
+    /// Return `true` if `self` is `ZExp`.
+    pub fn is_zexp(&self) -> bool { matches!(self, Self::Q1(G1::ZExp)) }
+
+    /// Return `true` if `self` is `U`.
+    pub fn is_u(&self) -> bool { matches!(self, Self::Q1(G1::U)) }
+
+    /// Return `true` if `self` is `Cliff1`.
+    pub fn is_cliff1(&self) -> bool { matches!(self, Self::Q1(G1::Cliff1)) }
+
+    /// Return `true` if `self` is `Haar1`.
+    pub fn is_haar1(&self) -> bool { matches!(self, Self::Q1(G1::Haar1)) }
 
     /// Returns `true` if `self` is `Q2`.
     pub fn is_q2(&self) -> bool { matches!(self, Self::Q2(..)) }
 
-    /// Returns `true` if `self` is `CX`.
-    pub fn is_cx(&self) -> bool { matches!(self, Self::Q2(g) if g.is_cx()) }
+    /// Return `true` if `self` is `CX`.
+    pub fn is_cx(&self) -> bool { matches!(self, Self::Q2(G2::CX)) }
 
-    /// Returns `true` if `self` is `CXRev`.
-    pub fn is_cxrev(&self) -> bool { matches!(self, Self::Q2(g) if g.is_cxrev()) }
+    /// Return `true` if `self` is `CXRev`.
+    pub fn is_cxrev(&self) -> bool { matches!(self, Self::Q2(G2::CXRev)) }
 
-    /// Returns `true` if `self` is `CZ`.
-    pub fn is_cz(&self) -> bool { matches!(self, Self::Q2(g) if g.is_cz()) }
+    /// Return `true` if `self` is `CY`.
+    pub fn is_cy(&self) -> bool { matches!(self, Self::Q2(G2::CY)) }
 
-    /// Returns `true` if `self` is `Haar2`.
-    pub fn is_haar2(&self) -> bool { matches!(self, Self::Q2(g) if g.is_haar2()) }
+    /// Return `true` if `self` is `CYRev`.
+    pub fn is_cyrev(&self) -> bool { matches!(self, Self::Q2(G2::CYRev)) }
+
+    /// Return `true` if `self` is `CZ`.
+    pub fn is_cz(&self) -> bool { matches!(self, Self::Q2(G2::CZ)) }
+
+    /// Return `true` if `self` is `CXRot`.
+    pub fn is_cxrot(&self) -> bool { matches!(self, Self::Q2(G2::CXRot)) }
+
+    /// Return `true` if `self` is `CXRotRev`.
+    pub fn is_cxrotrev(&self) -> bool { matches!(self, Self::Q2(G2::CXRotRev)) }
+
+    /// Return `true` if `self` is `CYRot`.
+    pub fn is_cyrot(&self) -> bool { matches!(self, Self::Q2(G2::CYRot)) }
+
+    /// Return `true` if `self` is `CYRotRev`.
+    pub fn is_cyrotrev(&self) -> bool { matches!(self, Self::Q2(G2::CYRotRev)) }
+
+    /// Return `true` if `self` is `CZRot`.
+    pub fn is_czrot(&self) -> bool { matches!(self, Self::Q2(G2::CZRot)) }
+
+    /// Return `true` if `self` is `CXExp`.
+    pub fn is_cxexp(&self) -> bool { matches!(self, Self::Q2(G2::CXExp)) }
+
+    /// Return `true` if `self` is `CXExpRev`.
+    pub fn is_cxexprev(&self) -> bool { matches!(self, Self::Q2(G2::CXExpRev)) }
+
+    /// Return `true` if `self` is `CYExp`.
+    pub fn is_cyexp(&self) -> bool { matches!(self, Self::Q2(G2::CYExp)) }
+
+    /// Return `true` if `self` is `CYExpRev`.
+    pub fn is_cyexprev(&self) -> bool { matches!(self, Self::Q2(G2::CYExpRev)) }
+
+    /// Return `true` if `self` is `CZExp`.
+    pub fn is_czexp(&self) -> bool { matches!(self, Self::Q2(G2::CZExp)) }
+
+    /// Return `true` if `self` is `MS`.
+    pub fn is_ms(&self) -> bool { matches!(self, Self::Q2(G2::MS)) }
+
+    /// Return `true` if `self` is `SqrtSwap`.
+    pub fn is_sqrtswap(&self) -> bool { matches!(self, Self::Q2(G2::SqrtSwap)) }
+
+    /// Return `true` if `self` is `Swap`.
+    pub fn is_swap(&self) -> bool { matches!(self, Self::Q2(G2::Swap)) }
+
+    /// Return `true` if `self` is `Cliff2`.
+    pub fn is_cliff2(&self) -> bool { matches!(self, Self::Q2(G2::Cliff2)) }
+
+    /// Return `true` if `self` is `Haar2`.
+    pub fn is_haar2(&self) -> bool { matches!(self, Self::Q2(G2::Haar2)) }
 }
 
-/// An exact one- or two-qubit unitary.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ExactGate {
-    /// Array is 2x2, applied to a single qubit.
-    Q1(usize, na::DMatrix<C64>),
-    /// Array is 4x4, applied to neighboring qubits with the index identifying
-    /// the left.
-    Q2(usize, na::DMatrix<C64>),
+// /// An exact one- or two-qubit unitary.
+// #[derive(Clone, Debug, PartialEq)]
+// pub enum ExactGate {
+//     /// Array is 2x2, applied to a single qubit.
+//     Q1(usize, na::DMatrix<C64>),
+//     /// Array is 4x4, applied to neighboring qubits with the index identifying
+//     /// the left.
+//     Q2(usize, na::DMatrix<C64>),
+// }
+
+/// Make an identity gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`IDMAT`] instead.
+pub fn make_id<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::DMatrix::identity(2, 2)
 }
 
-impl ExactGate {
-    /// Sample a random gate uniformly from a set.
-    pub fn sample_from<'a, I, G, R>(kinds: I, arg: G::QubitArg, rng: &mut R)
-        -> Self
-    where
-        I: IntoIterator<Item = &'a G>,
-        G: GateToken<Self> + 'a,
-        R: Rng + ?Sized
-    {
-        let kinds: Vec<&G> = kinds.into_iter().collect();
-        let n = kinds.len();
-        kinds[rng.gen_range(0..n)].sample(arg, rng)
-    }
+/// Lazy-static version of [`make_id`] for a [`Complex64`][C64] element type.
+pub static IDMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_id);
 
-    /// Return the index of the (left-most) qubit that the unitary acts on.
-    pub fn idx(&self) -> usize {
-        match self {
-            Self::Q1(k, _) => *k,
-            Self::Q2(k, _) => *k,
-        }
-    }
+/// Make a projection matrix that takes the ∣0⟩ component of a qubit.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`PROJ0MAT`] instead.
+pub fn make_proj0<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),  A::zero();
+        A::zero(), A::zero();
+    ]
 }
 
-/// Describes the general behavior for a gate identifier token, e.g. [`G1`] and
-/// [`G2`].
-pub trait GateToken<G> {
-    /// Operand(s) of the gate. Usually this is just the index of the qubit(s)
-    /// the gate acts on.
-    type QubitArg;
+/// Lazy-static version of [`make_proj0`] for a [`Complex64`][C64] element type.
+pub static PROJ0MAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_proj0);
 
-    /// Given a particular kind of gate and a target qubit or qubits, randomly
-    /// sample any remaining data to construct a gate object.
-    fn sample<R>(&self, op: Self::QubitArg, rng: &mut R) -> G
-    where R: Rng + ?Sized;
-
-    /// Return a random element of the token set.
-    fn random<R>(rng: &mut R) -> Self
-    where R: Rng + ?Sized;
-
-    /// Shortcut to the composition of `random` and `sample`.
-    fn sample_random<R>(op: Self::QubitArg, rng: &mut R) -> G
-    where
-        Self: Sized,
-        R: Rng + ?Sized,
-    {
-        Self::random(rng).sample(op, rng)
-    }
+/// Make a projection matrix that takes the ∣1⟩ component of a qubit.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`PROJ1MAT`] instead.
+pub fn make_proj1<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::zero(), A::zero();
+        A::zero(), A::one();
+    ]
 }
 
-impl GateToken<Gate> for G1 {
-    type QubitArg = usize;
+/// Lazy-static version of [`make_proj1`] for a [`Complex64`][C64] element type.
+pub static PROJ1MAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_proj1);
 
-    /// General rotation gates will sample their angles uniformly from `[0,
-    /// 2π)`. [`U`][Self::U] gates will sample all three rotation angles
-    /// independently.
-    fn sample<R>(&self, op: usize, rng: &mut R) -> Gate
-    where R: Rng + ?Sized
-    {
-        use std::f64::consts::TAU;
-        match self {
-            Self::U => {
-                let alpha: f64 = TAU * rng.gen::<f64>();
-                let beta: f64 = TAU * rng.gen::<f64>();
-                let gamma: f64 = TAU * rng.gen::<f64>();
-                Gate::U(op, alpha, beta, gamma)
-            },
-            Self::H => Gate::H(op),
-            Self::X => Gate::X(op),
-            Self::Z => Gate::Z(op),
-            Self::S => Gate::S(op),
-            Self::SInv => Gate::SInv(op),
-            Self::XRot => Gate::XRot(op, TAU * rng.gen::<f64>()),
-            Self::ZRot => Gate::ZRot(op, TAU * rng.gen::<f64>()),
-        }
-    }
-
-    fn random<R>(rng: &mut R) -> Self
-    where R: Rng + ?Sized
-    {
-        match rng.gen_range(0..8_usize) {
-            0 => Self::U,
-            1 => Self::H,
-            2 => Self::X,
-            3 => Self::Z,
-            4 => Self::S,
-            5 => Self::SInv,
-            6 => Self::XRot,
-            7 => Self::ZRot,
-            _ => unreachable!(),
-        }
-    }
+/// Make a Hadamard gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`HMAT`] instead.
+pub fn make_h<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let h = A::from_re((A::Re::one() + A::Re::one()).recip().sqrt());
+    na::dmatrix![
+        h,  h;
+        h, -h;
+    ]
 }
 
-impl GateToken<ExactGate> for G1 {
-    type QubitArg = usize;
+/// Lazy-static version of [`make_h`] for a [`Complex64`][C64] element type.
+pub static HMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_h);
 
-    /// General rotation gates will sample their angles uniformly from `[0,
-    /// 2π)`. [`U`][Self::U] gates will sample all three rotation angles
-    /// independently.
-    fn sample<R>(&self, op: usize, rng: &mut R) -> ExactGate
-    where R: Rng + ?Sized
-    {
-        use std::f64::consts::TAU;
-        match self {
-            Self::U => {
-                let alpha: f64 = TAU * rng.gen::<f64>();
-                let beta: f64 = TAU * rng.gen::<f64>();
-                let gamma: f64 = TAU * rng.gen::<f64>();
-                ExactGate::Q1(op, make_u(alpha, beta, gamma))
-            },
-            Self::H => ExactGate::Q1(op, Lazy::force(&HMAT).clone()),
-            Self::X => ExactGate::Q1(op, Lazy::force(&XMAT).clone()),
-            Self::Z => ExactGate::Q1(op, Lazy::force(&ZMAT).clone()),
-            Self::S => ExactGate::Q1(op, Lazy::force(&SMAT).clone()),
-            Self::SInv => ExactGate::Q1(op, Lazy::force(&SINVMAT).clone()),
-            Self::XRot => ExactGate::Q1(op, make_xrot(TAU * rng.gen::<f64>())),
-            Self::ZRot => ExactGate::Q1(op, make_zrot(TAU * rng.gen::<f64>())),
-        }
-    }
-
-    fn random<R>(rng: &mut R) -> Self
-    where R: Rng + ?Sized
-    {
-        match rng.gen_range(0..8_usize) {
-            0 => Self::U,
-            1 => Self::H,
-            2 => Self::X,
-            3 => Self::Z,
-            4 => Self::S,
-            5 => Self::SInv,
-            6 => Self::XRot,
-            7 => Self::ZRot,
-            _ => unreachable!(),
-        }
-    }
+/// Make an X gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`XMAT`] instead.
+pub fn make_x<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(), A::zero();
+        A::zero(), A::one();
+    ]
 }
 
+/// Lazy-static version of [`make_x`] for a [`Complex64`][C64] element type.
+pub static XMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_x);
 
-impl GateToken<Gate> for G2 {
-    type QubitArg = usize;
-
-    fn sample<R>(&self, op: Self::QubitArg, _rng: &mut R) -> Gate
-    where R: Rng + ?Sized
-    {
-        match self {
-            Self::CX => Gate::CX(op),
-            Self::CXRev => Gate::CXRev(op),
-            Self::CZ => Gate::CZ(op),
-            Self::Haar2 => Gate::Haar2(op),
-        }
-    }
-
-    fn random<R>(rng: &mut R) -> Self
-    where R: Rng + ?Sized
-    {
-        match rng.gen_range(0..4_usize) {
-            0 => Self::CX,
-            1 => Self::CXRev,
-            2 => Self::CZ,
-            3 => Self::Haar2,
-            _ => unreachable!(),
-        }
-    }
+/// Make a Y gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`YMAT`] instead.
+pub fn make_y<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::zero(), -A::i();
+        A::i(),  A::zero();
+    ]
 }
 
-impl GateToken<ExactGate> for G2 {
-    type QubitArg = usize;
+/// Lazy-static version of [`make_y`] for a [`Complex64`][C64] element type.
+pub static YMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_y);
 
-    fn sample<R>(&self, op: Self::QubitArg, rng: &mut R) -> ExactGate
-    where R: Rng + ?Sized
-    {
-        match self {
-            Self::CX => ExactGate::Q2(op, Lazy::force(&CXMAT).clone()),
-            Self::CXRev => ExactGate::Q2(op, Lazy::force(&CXREVMAT).clone()),
-            Self::CZ => ExactGate::Q2(op, Lazy::force(&CZMAT).clone()),
-            Self::Haar2 => ExactGate::Q2(op, haar(2, rng)),
-        }
-    }
+/// Make a Z gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`ZMAT`] instead.
+pub fn make_z<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),   A::zero();
+        A::zero(), -A::one();
+    ]
+}
 
-    fn random<R>(rng: &mut R) -> Self
-    where R: Rng + ?Sized
-    {
-        match rng.gen_range(0..4_usize) {
-            0 => Self::CX,
-            1 => Self::CXRev,
-            2 => Self::CZ,
-            3 => Self::Haar2,
-            _ => unreachable!(),
-        }
-    }
+/// Lazy-static version of [`make_z`] for a [`Complex64`][C64] element type.
+pub static ZMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_z);
+
+/// Make a T gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`TMAT`] instead.
+pub fn make_t<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),  A::zero();
+        A::zero(), na::ComplexField::sqrt(A::i());
+    ]
+}
+
+/// Lazy-static version of [`make_t`] for a [`Complex64`][C64] element type.
+pub static TMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_t);
+
+/// Make a T<sup>†</sup> gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`TINVMAT`] instead.
+pub fn make_tinv<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),  A::zero();
+        A::zero(), na::ComplexField::sqrt(-A::i());
+    ]
+}
+
+/// Lazy-static version of [`make_tinv`] for a [`Complex64`][C64] element type.
+pub static TINVMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_tinv);
+
+/// Make an S gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`SMAT`] instead.
+pub fn make_s<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),  A::zero();
+        A::zero(), A::i();
+    ]
+}
+
+/// Lazy-static version of [`make_s`] for a [`Complex64`][C64] element type.
+pub static SMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_s);
+
+/// Make an S<sup>†</sup> gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`SINVMAT`] instead.
+pub fn make_sinv<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),   A::zero();
+        A::zero(), -A::i();
+    ]
+}
+
+/// Lazy-static version of [`make_sinv`] for a [`Complex64`][C64] element type.
+pub static SINVMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_sinv);
+
+/// Make an X-rotation gate.
+pub fn make_xrot<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let prefactor = A::cis(ang2);
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
+    na::dmatrix![
+        prefactor * ondiag,  prefactor * offdiag;
+        prefactor * offdiag, prefactor * ondiag;
+    ]
+}
+
+/// Make a Y-rotation gate.
+pub fn make_yrot<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let prefactor = A::cis(ang2);
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = A::from_re(ang2.sin());
+    na::dmatrix![
+        prefactor * ondiag, -prefactor * offdiag;
+        prefactor * offdiag, prefactor * ondiag;
+    ]
+}
+
+/// Make a Z-rotation gate.
+pub fn make_zrot<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let ph = A::cis(angle);
+    na::dmatrix![
+        A::one(),  A::zero();
+        A::zero(), ph;
+    ]
+}
+
+/// Make an X-exponentiation gate.
+pub fn make_xexp<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
+    na::dmatrix![
+        ondiag,  offdiag;
+        offdiag, ondiag;
+    ]
+}
+
+/// Make a Y-exponentiation gate.
+pub fn make_yexp<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = A::from_re(ang2.sin());
+    na::dmatrix![
+        ondiag, -offdiag;
+        offdiag, ondiag;
+    ]
+}
+
+/// Make a Z-exponentiation gate.
+pub fn make_zexp<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let ph = A::cis(angle / (A::Re::one() + A::Re::one()));
+    na::dmatrix![
+        ph.conj(), A::zero();
+        A::zero(), ph;
+    ]
 }
 
 /// Make a single-qubit unitary from its Euler angles.
@@ -530,122 +1206,16 @@ where A: ComplexScalar
     ]
 }
 
-/// Make a Hadamard gate.
-///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex64`][C64]-valued [`HMAT`] instead.
-pub fn make_h<A>() -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    let h = A::from_re((A::Re::one() + A::Re::one()).recip().sqrt());
-    na::dmatrix![
-        h,  h;
-        h, -h;
-    ]
-}
-
-/// Lazy-static version of [`make_h`] for a [`Complex64`][C64] element type.
-pub static HMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_h);
-
-/// Make an X gate.
-///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex64`][C64]-valued [`XMAT`] instead.
-pub fn make_x<A>() -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    na::dmatrix![
-        A::one(), A::zero();
-        A::zero(), A::one();
-    ]
-}
-
-/// Lazy-static version of [`make_x`] for a [`Complex64`][C64] element type.
-pub static XMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_x);
-
-/// Make a Z gate.
-///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex64`][C64]-valued [`ZMAT`] instead.
-pub fn make_z<A>() -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    na::dmatrix![
-        A::one(),   A::zero();
-        A::zero(), -A::one() ;
-    ]
-}
-
-/// Lazy-static version of [`make_z`] for a [`Complex64`][C64] element type.
-pub static ZMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_z);
-
-/// Make an S gate.
-///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex64`][C64]-valued [`SMAT`] instead.
-pub fn make_s<A>() -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    na::dmatrix![
-        A::one(),  A::zero();
-        A::zero(), A::i()   ;
-    ]
-}
-
-/// Lazy-static version of [`make_s`] for a [`Complex64`][C64] element type.
-pub static SMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_s);
-
-/// Make an S<sup>†</sup> gate.
-///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
-/// [`Complex64`][C64]-valued [`SINVMAT`] instead.
-pub fn make_sinv<A>() -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    na::dmatrix![
-        A::one(),   A::zero();
-        A::zero(), -A::i()   ;
-    ]
-}
-
-/// Lazy-static version of [`make_sinv`] for a [`Complex64`][C64] element type.
-pub static SINVMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_sinv);
-
-/// Make an X-rotation gate.
-pub fn make_xrot<A>(angle: A::Re) -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    let ang2 = angle / (A::Re::one() + A::Re::one());
-    let prefactor = A::cis(ang2);
-    let ondiag = A::from_re(ang2.cos());
-    let offdiag = -A::i() * A::from_re(ang2.sin());
-    na::dmatrix![
-        prefactor * ondiag,  prefactor * offdiag;
-        prefactor * offdiag, prefactor * ondiag ;
-    ]
-}
-
-/// Make a Z-rotation gate.
-pub fn make_zrot<A>(angle: A::Re) -> na::DMatrix<A>
-where A: ComplexScalar
-{
-    let ph = A::cis(angle);
-    na::dmatrix![
-        A::one(),  A::zero();
-        A::zero(), ph     ;
-    ]
-}
-
 /// Make a CX gate.
 ///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
+/// Since this gate takes no arguments, consider using the lazily constructed,
 /// [`Complex64`][C64]-valued [`CXMAT`] instead.
 pub fn make_cx<A>() -> na::DMatrix<A>
 where A: ComplexScalar
 {
     na::dmatrix![
         A::one(),  A::zero(), A::zero(), A::zero();
-        A::zero(), A::zero(), A::zero(), A::one() ;
+        A::zero(), A::zero(), A::zero(), A::one();
         A::zero(), A::zero(), A::one(),  A::zero();
         A::zero(), A::one(),  A::zero(), A::zero();
     ]
@@ -656,7 +1226,7 @@ pub static CXMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_cx);
 
 /// Make a CX gate with the control and target qubits reversed.
 ///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
+/// Since this gate takes no arguments, consider using the lazily constructed,
 /// [`Complex64`][C64]-valued [`CXREVMAT`] instead.
 pub fn make_cxrev<A>() -> na::DMatrix<A>
 where A: ComplexScalar
@@ -664,7 +1234,7 @@ where A: ComplexScalar
     na::dmatrix![
         A::one(),  A::zero(), A::zero(), A::zero();
         A::zero(), A::one(),  A::zero(), A::zero();
-        A::zero(), A::zero(), A::zero(), A::one() ;
+        A::zero(), A::zero(), A::zero(), A::one();
         A::zero(), A::zero(), A::one(),  A::zero();
     ]
 }
@@ -672,9 +1242,45 @@ where A: ComplexScalar
 /// Lazy-static version of [`make_cxrev`] for a [`Complex64`][C64] element type.
 pub static CXREVMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_cxrev);
 
+/// Make a CY gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`CYMAT`] instead.
+pub fn make_cy<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),  A::zero(), A::zero(),  A::zero();
+        A::zero(), A::zero(), A::zero(), -A::i();
+        A::zero(), A::zero(), A::one(),   A::zero();
+        A::zero(), A::i(),    A::zero(),  A::zero();
+    ]
+}
+
+/// Lazy-static version of [`make_cy`] for a [`Complex64`][C64] element type.
+pub static CYMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_cy);
+
+/// Make a CY gate with the control and target qubits reversed.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`CYREVMAT`] instead.
+pub fn make_cyrev<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    na::dmatrix![
+        A::one(),  A::zero(), A::zero(),  A::zero();
+        A::zero(), A::one(),  A::zero(),  A::zero();
+        A::zero(), A::zero(), A::zero(), -A::i();
+        A::zero(), A::zero(), A::i(),     A::zero();
+    ]
+}
+
+/// Lazy-static version of [`make_cyrev`] for a [`Complex64`][C64] element type.
+pub static CYREVMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_cyrev);
+
 /// Make a CZ gate.
 ///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
+/// Since this gate takes no arguments, consider using the lazily constructed,
 /// [`Complex64`][C64]-valued [`CZMAT`] instead.
 pub fn make_cz<A>() -> na::DMatrix<A>
 where A: ComplexScalar
@@ -683,16 +1289,252 @@ where A: ComplexScalar
         A::one(),  A::zero(), A::zero(),  A::zero();
         A::zero(), A::one(),  A::zero(),  A::zero();
         A::zero(), A::zero(), A::one(),   A::zero();
-        A::zero(), A::zero(), A::zero(), -A::one() ;
+        A::zero(), A::zero(), A::zero(), -A::one();
     ]
 }
 
 /// Lazy-static version of [`make_cz`] for a [`Complex64`][C64] element type.
 pub static CZMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_cz);
 
+/// Make a controlled X-rotation gate.
+pub fn make_cxrot<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let prefactor = A::cis(ang2);
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero,                zero, zero;
+        zero, prefactor * ondiag,  zero, prefactor * offdiag;
+        zero, zero,                one,  zero;
+        zero, prefactor * offdiag, zero, prefactor * ondiag;
+    ]
+}
+
+/// Make a controlled X-rotation gate with the control and target qubits
+/// reversed.
+pub fn make_cxrotrev<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let prefactor = A::cis(ang2);
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero, zero,                zero;
+        zero, one,  zero,                zero;
+        zero, zero, prefactor * ondiag,  prefactor * offdiag;
+        zero, zero, prefactor * offdiag, prefactor * ondiag;
+    ]
+}
+
+/// Make a controlled Y-rotation gate.
+pub fn make_cyrot<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let prefactor = A::cis(ang2);
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero,                zero,  zero;
+        zero, prefactor * ondiag,  zero, -prefactor * offdiag;
+        zero, zero,                one,   zero;
+        zero, prefactor * offdiag, zero,  prefactor * ondiag;
+    ]
+}
+
+/// Make a controlled Y-rotation gate with the control and target qubits
+/// reversed.
+pub fn make_cyrotrev<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let prefactor = A::cis(ang2);
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero, zero,                zero;
+        zero, one,  zero,                zero;
+        zero, zero, prefactor * ondiag, -prefactor * offdiag;
+        zero, zero, prefactor * offdiag, prefactor * ondiag;
+    ]
+}
+
+/// Make a controlled Z-rotation gate.
+pub fn make_czrot<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ph = A::cis(angle);
+    na::dmatrix![
+        one,  zero, zero, zero;
+        zero, one,  zero, zero;
+        zero, zero, one,  zero;
+        zero, zero, zero, ph;
+    ]
+}
+
+/// Make a controlled X-exponentiation gate.
+pub fn make_cxexp<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero,    zero, zero;
+        zero, ondiag,  zero, offdiag;
+        zero, zero,    one,  zero;
+        zero, offdiag, zero, ondiag;
+    ]
+}
+
+/// Make a controlled X-exponentiation gate with the control and target qubits
+/// reversed.
+pub fn make_cxexprev<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = -A::i() * A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero, zero,    zero;
+        zero, one,  zero,    zero;
+        zero, zero, ondiag,  offdiag;
+        zero, zero, offdiag, ondiag;
+    ]
+}
+
+/// Make a controlled Y-exponentiation gate.
+pub fn make_cyexp<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero,    zero,  zero;
+        zero, ondiag,  zero, -offdiag;
+        zero, zero,    one,   zero;
+        zero, offdiag, zero,  ondiag;
+    ]
+}
+
+/// Make a controlled Y-exponentiation gate with the control and target qubits
+/// reversed.
+pub fn make_cyexprev<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ang2 = angle / (A::Re::one() + A::Re::one());
+    let ondiag = A::from_re(ang2.cos());
+    let offdiag = A::from_re(ang2.sin());
+    na::dmatrix![
+        one,  zero, zero,     zero;
+        zero, one,  zero,     zero;
+        zero, zero, ondiag,  -offdiag;
+        zero, zero, offdiag,  ondiag;
+    ]
+}
+
+/// Make a controlled Z-exponentiation gate.
+pub fn make_czexp<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ph = A::cis(angle / (A::Re::one() + A::Re::one()));
+    na::dmatrix![
+        one,  zero,      zero, zero;
+        zero, ph.conj(), zero, zero;
+        zero, zero,      one,  zero;
+        zero, zero,      zero, ph;
+    ]
+}
+
+/// Make a controlled Z-exponentiation gate with the control and target qubits
+/// reversed.
+pub fn make_czexprev<A>(angle: A::Re) -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let ph = A::cis(angle / (A::Re::one() + A::Re::one()));
+    na::dmatrix![
+        one,  zero, zero,      zero;
+        zero, one,  zero,      zero;
+        zero, zero, ph.conj(), zero;
+        zero, zero, zero,      ph;
+    ]
+}
+
+/// Make a Mølmer-Sørensen gate. This gate uses the *xx* definition.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`MSMAT`] instead.
+pub fn make_ms<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    use num_complex::ComplexFloat;
+    let zero = A::zero();
+    let two = A::one() + A::one();
+    let ort2 = ComplexFloat::recip(ComplexFloat::sqrt(two));
+    let iort2 = A::i() * ort2;
+    na::dmatrix![
+        ort2, zero, zero, -iort2;
+        zero, ort2, -iort2, zero;
+        zero, -iort2, ort2, zero;
+        -iort2, zero, zero, ort2;
+    ]
+}
+
+/// Lazy-static version of [`make_ms`] for a [`Complex64`][C64] element type.
+pub static MSMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_ms);
+
+/// Make a root-swap gate.
+///
+/// Since this gate takes no arguments, consider using the lazily constructed,
+/// [`Complex64`][C64]-valued [`SQRTSWAPMAT`] instead.
+pub fn make_sqrtswap<A>() -> na::DMatrix<A>
+where A: ComplexScalar
+{
+    let zero = A::zero();
+    let one = A::one();
+    let two = one + one;
+    let t = (one + A::i()) / two;
+    na::dmatrix![
+        one,  zero,     zero,     zero;
+        zero, t,        t.conj(), zero;
+        zero, t.conj(), t,        zero;
+        zero, zero,     zero,     one;
+    ]
+}
+
+/// Lazy-static version of [`make_sqrtswap`] for a [`Complex64`][C64] element
+/// type.
+pub static SQRTSWAPMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_sqrtswap);
+
 /// Make a swap gate.
 ///
-/// Since this gate takes no arguments, consider using the lazily-constructed,
+/// Since this gate takes no arguments, consider using the lazily constructed,
 /// [`Complex64`][C64]-valued [`SWAPMAT`] instead.
 pub fn make_swap<A>() -> na::DMatrix<A>
 where A: ComplexScalar
@@ -701,15 +1543,66 @@ where A: ComplexScalar
         A::one(),  A::zero(), A::zero(), A::zero();
         A::zero(), A::zero(), A::one(),  A::zero();
         A::zero(), A::one(),  A::zero(), A::zero();
-        A::zero(), A::zero(), A::zero(), A::one() ;
+        A::zero(), A::zero(), A::zero(), A::one();
     ]
 }
 
 /// Lazy-static version of [`make_swap`] for a [`Complex64`][C64] element type.
 pub static SWAPMAT: Lazy<na::DMatrix<C64>> = Lazy::new(make_swap);
 
+/// Generate a random element of the `n`-qubit Clifford group as a matrix.
+pub fn make_cliff<A, R>(n: usize, rng: &mut R) -> na::DMatrix<A>
+where
+    A: ComplexScalar,
+    R: Rng + ?Sized,
+{
+    use num_complex::ComplexFloat;
+    if n == 1 {
+        let zero = A::zero();
+        let one = A::one();
+        let two = one + one;
+        let ort2 = ComplexFloat::recip(ComplexFloat::sqrt(two));
+        let i = A::i();
+        let iort2 = i * ort2;
+        let t = (one + i) / two;
+        match rng.gen_range(0..24) {
+            0  => na::DMatrix::identity(2, 2),                      // I
+            1  => make_h(),                                         // H
+            2  => make_s(),                                         // S
+            3  => make_x(),                                         // X
+            4  => make_y(),                                         // Y
+            5  => make_z(),                                         // Z
+            6  => na::dmatrix!(ort2, -ort2; ort2, ort2),            // X H
+            7  => na::dmatrix!(-iort2, iort2; iort2, iort2),        // Y H
+            8  => na::dmatrix!(ort2, ort2; -ort2, ort2),            // Z H
+            9  => na::dmatrix!(ort2, iort2; ort2, -iort2),          // H S
+            10 => na::dmatrix!(zero, i; one, zero),                 // X S
+            11 => na::dmatrix!(zero, one; i, zero),                 // Y S
+            12 => na::dmatrix!(one, zero; zero, -i),                // Z S
+            13 => na::dmatrix!(t, t.conj(); t.conj(), t),           // H S H
+            14 => na::dmatrix!(ort2, -iort2; ort2, iort2),          // X H S
+            15 => na::dmatrix!(-iort2, -ort2; iort2, -ort2),         // Y H S
+            16 => na::dmatrix!(ort2, iort2; -ort2, iort2),          // Z H S
+            17 => na::dmatrix!(t, i * t.conj(); t.conj(), i * t),   // H S H S
+            18 => na::dmatrix!(t.conj(), t; t, t.conj()),           // X H S H
+            19 => na::dmatrix!(-t, t.conj(); -t.conj(), t),         // Y H S H
+            20 => na::dmatrix!(t, t.conj(); -t.conj(), -t),         // Z H S H
+            21 => na::dmatrix!(t.conj(), i * t; t, i * t.conj()),   // X H S H S
+            22 => na::dmatrix!(-t, t.conj(); -t.conj(), t),         // Y H S H S
+            23 => na::dmatrix!(t, i * t.conj(); -t.conj(), -i * t), // Z H S H S
+            _ => unreachable!(),
+        }
+    } else {
+        Clifford::gen(n, rng)
+            .unpack().0
+            .into_iter()
+            .map(|cg| cg.into_matrix::<A>(n))
+            .fold(qembed(n, []), |acc, mat| mat * acc)
+    }
+}
+
 /// Generate an `n`-qubit Haar-random unitary matrix.
-pub fn haar<A, R>(n: usize, rng: &mut R) -> na::DMatrix<A>
+pub fn make_haar<A, R>(n: usize, rng: &mut R) -> na::DMatrix<A>
 where
     A: ComplexScalar,
     Normal: Distribution<<A as ComplexScalar>::Re>,
@@ -747,11 +1640,11 @@ pub enum CliffGate {
     SInv(usize),
     /// Z-controlled π rotation about X.
     ///
-    /// The first qubit index is the control.
+    /// The left qubit index is the control.
     CX(usize, usize),
     /// Z-controlled π rotation about Z.
     ///
-    /// The first qubit index is the control.
+    /// The left qubit index is the control.
     CZ(usize, usize),
     /// Swap
     Swap(usize, usize),
@@ -802,6 +1695,82 @@ impl CliffGate {
         }
     }
 
+    fn into_matrix<A>(self, n: usize) -> na::DMatrix<A>
+    where A: ComplexScalar
+    {
+        match self {
+            Self::H(k) => qembed(n, [(k, make_h())]),
+            Self::X(k) => qembed(n, [(k, make_x())]),
+            Self::Y(k) => qembed(n, [(k, make_y())]),
+            Self::Z(k) => qembed(n, [(k, make_z())]),
+            Self::S(k) => qembed(n, [(k, make_s())]),
+            Self::SInv(k) => qembed(n, [(k, make_sinv())]),
+            Self::CX(c, t) => {
+                let p0 = qembed(n, [(c, make_proj0())]);
+                let p1 = qembed(
+                    n,
+                    if c < t { [(c, make_proj1()), (t, make_x())] }
+                    else { [(t, make_x()), (c, make_proj1())] },
+                );
+                p0 + p1
+            },
+            Self::CZ(a, b) => {
+                let p0 = qembed(n, [(a, make_proj0())]);
+                let p1 = qembed(n, [(a, make_proj1()), (b, make_z())]);
+                p0 + p1
+            },
+            Self::Swap(a, b) => {
+                let ii = na::DMatrix::<A>::identity(
+                    1_usize << n as u32, 1_usize << n as u32);
+                let xx = qembed(n, [(a, make_x()), (b, make_x())]);
+                let yy = qembed(n, [(a, make_y()), (b, make_y())]);
+                let zz = qembed(n, [(a, make_z()), (b, make_z())]);
+                (ii + xx + yy + zz) / (A::one() + A::one())
+            },
+        }
+    }
+}
+
+// requires that qubit indices be in ascending order, all operators are
+// single-qubit, and that all indices are less than `n`
+//
+// since nalgebra is column-major, we accumulate tensor products from the right
+fn qembed<I, A>(n: usize, ops: I) -> na::DMatrix<A>
+where
+    I: IntoIterator<Item = (usize, na::DMatrix<A>)>,
+    A: ComplexScalar,
+{
+    let mut last: Option<usize> = None;
+    let mut acc: na::DMatrix<A> = na::dmatrix!(A::one());
+    for (j, mat) in ops.into_iter() {
+        if let Some(k) = last.as_mut() {
+            if j - *k > 1 {
+                let dq = (j - 1 - *k) as u32;
+                acc =
+                    mat.kronecker(&na::DMatrix::identity(1 << dq, 1 << dq))
+                    .kronecker(&acc);
+            } else {
+                acc = mat.kronecker(&acc);
+            }
+            *k = j;
+        } else {
+            let dq = j as u32;
+            acc =
+                mat.kronecker(&na::DMatrix::identity(1 << dq, 1 << dq))
+                .kronecker(&acc);
+            last = Some(j);
+        }
+    }
+    if let Some(k) = last {
+        if k < n - 1 {
+            let dq = (n - 1 - k) as u32;
+            acc = na::DMatrix::identity(1 << dq, 1 << dq).kronecker(&acc);
+        }
+    } else {
+        let dq = n as u32;
+        acc = na::DMatrix::identity(1 << dq, 1 << dq);
+    }
+    acc
 }
 
 // A single-qubit Pauli operator.
@@ -1106,8 +2075,10 @@ impl Clifford {
     /// element.
     pub fn iter(&self) -> std::slice::Iter<'_, CliffGate> { self.gates.iter() }
 
+    /// Unpack `self` into a bare pair of gates and a number of qubits.
     pub fn unpack(self) -> (Vec<CliffGate>, usize) { (self.gates, self.n) }
 
+    /// Sample a random element of the `n`-qubit Clifford group.
     pub fn gen<R>(n: usize, rng: &mut R) -> Self
     where R: Rng + ?Sized
     {

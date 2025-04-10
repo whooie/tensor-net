@@ -103,7 +103,6 @@ use std::{
 use nalgebra as na;
 use num_complex::Complex64 as C64;
 use num_traits::{ Float, One, Zero };
-use once_cell::sync::Lazy;
 use rand::{
     Rng,
     distributions::{ Distribution, Standard },
@@ -113,8 +112,8 @@ use crate::{
     ComplexScalar,
     circuit::Q,
     // gamma::{ Gamma, GData, BondDim, Schmidt },
-    gate_na::{ self as gate, Gate },
-    tensor::Idx,
+    gate_na::Gate,
+    tensor_na::Idx,
 };
 
 #[derive(Debug, Error)]
@@ -1568,63 +1567,42 @@ impl MPS<Q, C64> {
         Self::new((0..n).map(Q), trunc)
     }
 
-    /// Apply a gate unitary in place.
+    /// Apply a gate in place.
     ///
     /// Does nothing if any qubit indices are out of bounds.
-    pub fn apply_gate(&mut self, gate: Gate) -> &mut Self {
-        match gate {
-            Gate::U(k, alpha, beta, gamma) if k < self.n => {
-                self.apply_op1(k, &gate::make_u(alpha, beta, gamma))
-                    .unwrap();
-            },
-            Gate::H(k) if k < self.n => {
-                self.apply_op1(k, Lazy::force(&gate::HMAT))
-                    .unwrap();
-            },
-            Gate::X(k) if k < self.n => {
-                self.apply_op1(k, Lazy::force(&gate::XMAT))
-                    .unwrap();
-            },
-            Gate::Z(k) if k < self.n => {
-                self.apply_op1(k, Lazy::force(&gate::ZMAT))
-                    .unwrap();
-            },
-            Gate::S(k) if k < self.n => {
-                self.apply_op1(k, Lazy::force(&gate::SMAT))
-                    .unwrap();
-            },
-            Gate::SInv(k) if k < self.n => {
-                self.apply_op1(k, Lazy::force(&gate::SINVMAT))
-                    .unwrap();
-            },
-            Gate::XRot(k, alpha) if k < self.n => {
-                self.apply_op1(k, &gate::make_xrot(alpha))
-                    .unwrap();
-            },
-            Gate::ZRot(k, alpha) if k < self.n => {
-                self.apply_op1(k, &gate::make_zrot(alpha))
-                    .unwrap();
-            },
-            Gate::CX(k) if k < self.n - 1 => {
-                self.apply_op2(k, Lazy::force(&gate::CXMAT))
-                    .unwrap();
-            },
-            Gate::CXRev(k) if k < self.n - 1 => {
-                self.apply_op2(k, Lazy::force(&gate::CXREVMAT))
-                    .unwrap();
-            },
-            Gate::CZ(k) if k < self.n - 1 => {
-                self.apply_op2(k, Lazy::force(&gate::CZMAT))
-                    .unwrap();
-            },
-            Gate::Haar2(k) if k < self.n - 1 => {
-                // TODO: figure out a way to avoid having to call thread_rng
-                // here; it's slow
-                let mut rng = rand::thread_rng();
-                self.apply_op2(k, &gate::haar(2, &mut rng))
-                    .unwrap();
-            },
-            _ => { },
+    ///
+    /// Note that `Cliff*` and `Haar*` gates require random sampling, for which
+    /// the thread-local generator will be acquired and then immediately
+    /// released. If you are applying many of these gates, this is inefficient;
+    /// you may wish to use [`apply_gate_rng`][Self::apply_gate_rng] instead,
+    /// which takes a cached generator as argument and may be used for
+    /// fixed-seed applications.
+    pub fn apply_gate(&mut self, gate: &Gate) -> &mut Self {
+        if gate.is_q1() {
+            let (k, mat) = (*gate).into_matrix();
+            self.apply_op1(k, &mat).unwrap();
+        } else if gate.is_q2() {
+            let (k, mat) = (*gate).into_matrix();
+            self.apply_op2(k, &mat).unwrap();
+        } else {
+            unreachable!()
+        }
+        self
+    }
+
+    /// Like [`apply_gate`][Self::apply_gate], but taking a cached random
+    /// generator.
+    pub fn apply_gate_rng<R>(&mut self, gate: &Gate, rng: &mut R) -> &mut Self
+    where R: Rng + ?Sized
+    {
+        if gate.is_q1() {
+            let (k, mat) = (*gate).into_matrix_rng(rng);
+            self.apply_op1(k, &mat).unwrap();
+        } else if gate.is_q2() {
+            let (k, mat) = (*gate).into_matrix_rng(rng);
+            self.apply_op2(k, &mat).unwrap();
+        } else {
+            unreachable!()
         }
         self
     }
@@ -1633,14 +1611,24 @@ impl MPS<Q, C64> {
     pub fn apply_circuit<'a, I>(&mut self, gates: I) -> &mut Self
     where I: IntoIterator<Item = &'a Gate>
     {
-        gates.into_iter().copied()
+        gates.into_iter()
             .for_each(|g| { self.apply_gate(g); });
         self
     }
 
-    /// Like [`measure`][Self::measure], but deterministically reset the state
-    /// to ∣0⟩ after measurement.
-    pub fn measure_reset<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
+    /// Like [`apply_circuit`][Self::apply_circuit], but taking a cached random
+    /// generator.
+    pub fn apply_circuit_rng<'a, I, R>(&mut self, gates: I, rng: &mut R)
+        -> &mut Self
+    where
+        I: IntoIterator<Item = &'a Gate>,
+        R: Rng + ?Sized
+    {
+        gates.into_iter()
+            .for_each(|g| { self.apply_gate_rng(g, rng); });
+        self
+    }
+
     where R: Rng + ?Sized
     {
         let res = self.measure(k, rng);
