@@ -113,11 +113,11 @@ name = "lib"
 # name = "haar_coev_probs_batching"
 
 [[bin]]
-path = "src/haar_gen_circuits_na.rs"
+path = "src/haar_gen_circuits.rs"
 name = "haar_gen_circuits"
 
 [[bin]]
-path = "src/haar_coev_probs_batching_na.rs"
+path = "src/haar_coev_probs_batching.rs"
 name = "haar_coev_probs_batching"
 
 [profile.release]
