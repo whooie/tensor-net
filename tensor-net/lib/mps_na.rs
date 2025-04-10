@@ -1709,6 +1709,12 @@ impl MPS<Q, C64> {
                     Err(OperatorIncompatibleShape)
                 }
             },
+            // Uni::MatQ1(..) => {
+            //     todo!()
+            // },
+            // Uni::MatQ2(..) => {
+            //     todo!()
+            // },
         }
     }
 
@@ -1729,6 +1735,12 @@ impl MPS<Q, C64> {
                     Err(OperatorIncompatibleShape)
                 }
             },
+            // Uni::MatQ1(..) => {
+            //     todo!()
+            // },
+            // Uni::MatQ2(..) => {
+            //     todo!()
+            // },
         }
     }
 

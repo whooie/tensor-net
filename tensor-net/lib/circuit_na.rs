@@ -195,8 +195,14 @@ impl From<Outcome> for bool {
 /// unitary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Uni {
+    /// A succinct [`Gate`] description.
     Gate(Gate),
+    /// An explicitly represented matrix.
     Mat(usize, na::DMatrix<C64>),
+    // /// An explicitly represented matrix for one-qubit states.
+    // MatQ1(usize, na::Matrix2<C64>),
+    // /// An explicitly represented matrix for two-qubit states.
+    // MatQ2(usize, na::Matrix4<C64>),
 }
 
 impl Uni {
@@ -211,6 +217,8 @@ impl Uni {
         match self {
             Self::Gate(g) => g.idx(),
             Self::Mat(k, _) => *k,
+            // Self::MatQ1(k, _) => *k,
+            // Self::MatQ2(k, _) => *k,
         }
     }
 
@@ -219,6 +227,8 @@ impl Uni {
         match self {
             Self::Gate(g) => g.idx_mut(),
             Self::Mat(k, _) => k,
+            // Self::MatQ1(k, _) => k,
+            // Self::MatQ2(k, _) => k,
         }
     }
 
@@ -238,6 +248,8 @@ impl Uni {
                 *self = Self::Mat(k, mat);
             },
             Self::Mat(..) => { },
+            // Self::MatQ1(..) => { },
+            // Self::MatQ2(..) => { },
         }
         self.mat().unwrap()
     }
@@ -253,6 +265,8 @@ impl Uni {
                 *self = Self::Mat(k, mat);
             },
             Self::Mat(..) => { },
+            // Self::MatQ1(..) => { },
+            // Self::MatQ2(..) => { },
         }
         self.mat().unwrap()
     }
@@ -263,6 +277,8 @@ impl Uni {
         match self {
             Self::Gate(g) => Some(g),
             Self::Mat(..) => None,
+            // Self::MatQ1(..) => None,
+            // Self::MatQ2(..) => None,
         }
     }
 
@@ -272,6 +288,8 @@ impl Uni {
         match self {
             Self::Gate(g) => Some(g),
             Self::Mat(..) => None,
+            // Self::MatQ1(..) => None,
+            // Self::MatQ2(..) => None,
         }
     }
 
@@ -280,6 +298,8 @@ impl Uni {
         match self {
             Self::Gate(_) => None,
             Self::Mat(k, mat) => Some((*k, mat)),
+            // Self::MatQ1(..) => todo!(),
+            // Self::MatQ2(..) => todo!(),
         }
     }
 
@@ -292,6 +312,8 @@ impl Uni {
         match self {
             Self::Gate(_) => None,
             Self::Mat(k, mat) => Some((*k, mat)),
+            // Self::MatQ1(..) => todo!(),
+            // Self::MatQ2(..) => todo!(),
         }
     }
 }
@@ -416,6 +438,7 @@ impl From<(Outcome, usize)> for Meas {
 
 /// A single unitary or measurement operation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum Op {
     Uni(Uni),
     Meas(Meas),
