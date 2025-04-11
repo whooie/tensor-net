@@ -60,7 +60,7 @@
 //! ```
 //! use tensor_net::tensor::{ Idx, Tensor }; // see the Idx trait
 //!
-//! #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+//! #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 //! enum Index { A, B, C }
 //!
 //! impl Idx for Index {
@@ -99,7 +99,7 @@
 //! //  [8, 8, 8, 8, 8]] { A, C }
 //! ```
 
-use std::{ collections::VecDeque, fmt, hash::Hash };
+use std::{ collections::VecDeque, fmt };
 use nalgebra::{ self as na, ComplexField };
 use thiserror::Error;
 
@@ -141,7 +141,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// available indices are encoded directly in the structure of the type
 /// implementing this trait:
 /// ```ignore
-/// #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// #[derive(Clone, Debug, PartialEq, Eq)]
 /// enum Index { A, B, C, /* ... */ }
 ///
 /// impl Idx for Index {
@@ -164,7 +164,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// indices and their dimensions are left to be encoded as arbitrary fields of
 /// the type:
 /// ```ignore
-/// #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// #[derive(Clone, Debug, PartialEq, Eq)]
 /// struct Index(String, usize);
 ///
 /// impl Idx for Index {
@@ -179,7 +179,7 @@ pub type TensorResult<T> = Result<T, TensorError>;
 /// of freedom.
 ///
 /// Ultimately, static representations should be preferred where possible.
-pub trait Idx: Clone + Eq + Hash + std::fmt::Debug {
+pub trait Idx: Clone + PartialEq + std::fmt::Debug {
     /// Return the number of values the index can take.
     ///
     /// This value must never be zero.
@@ -197,7 +197,7 @@ pub trait Idx: Clone + Eq + Hash + std::fmt::Debug {
 /// This type should be used only when a tensor network needs to be dynamically
 /// modifiable, otherwise static implementations should be preferred (see
 /// [`Idx`]).
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DynIdx(
     /// Identifier label.
     pub std::sync::Arc<str>,

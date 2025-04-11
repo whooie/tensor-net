@@ -50,7 +50,7 @@
 //! use tensor_net::tensor::Idx;
 //!
 //! // `Q(k)` is a qubit degree of freedom for the `k`-th particle.
-//! #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+//! #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 //! struct Q(usize);
 //!
 //! impl Idx for Q {
