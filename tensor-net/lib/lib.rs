@@ -18,6 +18,7 @@ use num_traits::{ Float, Zero };
 // pub mod circuit;
 
 pub mod tensor;
+pub mod network;
 
 pub mod mps;
 pub mod gate;
