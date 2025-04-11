@@ -13,12 +13,12 @@ use tensor_net::{ circuit::Q, mps::* };
 use whooie::write_npz;
 use lib::{ *, haar::* };
 
-const N: usize = 6;
+const N: usize = 15;
 const T: usize = 10 * N;
 const CIRCS: usize = 30;
 const P_MEAS: &[f64] = &[
-    0.010, 0.020, 0.030, 0.040, 0.050, 0.070, 0.090, 0.100, 0.115,
-    0.130, 0.140, 0.145, 0.150, 0.155, 0.160, 0.165, 0.170, 0.175, 0.180,
+    0.025, 0.050, 0.075, 0.100, 0.115, 0.130,
+    0.140, 0.145, 0.150, 0.155, 0.160, 0.165, 0.170, 0.175, 0.180,
     0.190, 0.210, 0.225, 0.250, 0.275,
     0.300, 0.325, 0.350, 0.375,
     0.400,
@@ -131,10 +131,10 @@ fn main() {
     let w_p: usize = (P_MEAS.len() as f64).log10().floor() as usize + 1;
     let w_run: usize = (RUNS as f64).log10().floor() as usize + 1;
 
-    eprint!(" {:w_c$} / {:w_c$} ", 0, CIRCS);
+    //eprint!(" {:w_c$} / {:w_c$} ", 0, CIRCS);
     for i in 0..CIRCS {
-        eprint!("\x1b[{}D{:w_c$} / {:w_c$} ",
-            2 * w_c + 4, i + 1, CIRCS);
+        //eprint!("\x1b[{}D{:w_c$} / {:w_c$} ",
+        //    2 * w_c + 4, i + 1, CIRCS);
 
         // traj_data :: { p, run, t, x }
         let mut traj_data: nd::Array4<i8> =
@@ -147,18 +147,20 @@ fn main() {
         let (p, meas) = load_meas(circuit_dir.join(Instance::Meas.fmt(i, None)));
         assert!(p.len() == P_MEAS.len() && p.iter().all(|p| P_MEAS.contains(p)));
 
-        eprint!(" {:w_p$} / {:w_p$} ", 0, n_p);
+        //eprint!(" {:w_p$} / {:w_p$} ", 0, n_p);
         let p_iter =
             traj_data.outer_iter_mut()
             .zip(prob_data.outer_iter_mut())
             .zip(meas.iter())
             .enumerate();
         for (j, ((mut traj_p, mut prob_p), meas_p)) in p_iter {
-            eprint!("\x1b[{}D{:w_p$} / {:w_p$} ",
-                2 * w_p + 4, j + 1, n_p);
+            //eprint!("\x1b[{}D{:w_p$} / {:w_p$} ",
+            //    2 * w_p + 4, j + 1, n_p);
+            eprint!("{:w_c$} / {:w_c$} ", i + 1, CIRCS);
+            eprintln!("{:w_p$} / {:w_p$} ", j + 1, n_p);
 
-            let mut run = AtomicUsize::new(0);
-            eprint!(" {:w_run$} / {:w_run$} ", run.get_mut(), RUNS);
+            let run = AtomicUsize::new(0);
+            //eprint!(" {:w_run$} / {:w_run$} ", run.get_mut(), RUNS);
             nd::Zip::from(traj_p.outer_iter_mut())
                 .and(prob_p.outer_iter_mut())
                 .par_for_each(|mut traj_pr, mut prob_pr| {
@@ -189,12 +191,13 @@ fn main() {
                         });
                     });
                     let prev_run = run.fetch_add(1, Ordering::SeqCst);
-                    eprint!("\x1b[{}D{:w_run$} / {:w_run$} ",
-                        2 * w_run + 4, prev_run + 1, RUNS);
+                    //eprint!("\x1b[{}D{:w_run$} / {:w_run$} ",
+                    //    2 * w_run + 4, prev_run + 1, RUNS);
+                    eprintln!("{:w_run$} / {:w_run$} ", prev_run + 1, RUNS);
                 });
-            eprint!("\x1b[{}D", 2 * w_run + 5);
+            //eprint!("\x1b[{}D", 2 * w_run + 5);
         }
-        eprint!("\x1b[{}D", 2 * w_p + 5);
+        //eprint!("\x1b[{}D", 2 * w_p + 5);
         let fname = Instance::Output.fmt(i, Some(&task_id));
         write_npz!(
             outdir.join(fname),
