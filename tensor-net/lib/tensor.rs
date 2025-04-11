@@ -57,6 +57,7 @@
 //!   </p>
 //! </blockquote>
 //!
+//! # Example
 //! ```
 //! use tensor_net::tensor::{ Idx, Tensor }; // see the Idx trait
 //!
@@ -81,22 +82,31 @@
 //!
 //! let a = Tensor::new([Index::A, Index::B], |_| 1.0).unwrap();
 //! println!("{}", a);
-//! // [[1, 1, 1, 1],
-//! //  [1, 1, 1, 1],
-//! //  [1, 1, 1, 1]] { A, B }
+//! // { <A>, <B> }
+//! // ┌         ┐
+//! // │ 1 1 1 1 │
+//! // │ 1 1 1 1 │
+//! // │ 1 1 1 1 │
+//! // └         ┘
 //!
 //! let b = Tensor::new([Index::B, Index::C], |_| 2.0).unwrap();
 //! println!("{}", b);
-//! // [[2, 2, 2, 2, 2],
-//! //  [2, 2, 2, 2, 2],
-//! //  [2, 2, 2, 2, 2],
-//! //  [2, 2, 2, 2, 2]] { B, C }
+//! // { <B>, <C> }
+//! // ┌           ┐
+//! // │ 2 2 2 2 2 │
+//! // │ 2 2 2 2 2 │
+//! // │ 2 2 2 2 2 │
+//! // │ 2 2 2 2 2 │
+//! // └           ┘
 //!
 //! let c = a.contract(b).unwrap(); // C_{a,c} = A_{a,b} B_{b,c}
 //! println!("{}", c);
-//! // [[8, 8, 8, 8, 8],
-//! //  [8, 8, 8, 8, 8],
-//! //  [8, 8, 8, 8, 8]] { A, C }
+//! // { <A>, <C> }
+//! // ┌           ┐
+//! // │ 8 8 8 8 8 │
+//! // │ 8 8 8 8 8 │
+//! // │ 8 8 8 8 8 │
+//! // └           ┘
 //! ```
 
 use std::{ collections::VecDeque, fmt };
@@ -1273,7 +1283,7 @@ where
     pub fn is_scalar(&self) -> bool { self.0.is_scalar() }
 
     /// Return `true` if `self` has rank greater than 0.
-    pub fn is_tensor(&self) -> bool { self.0.is_scalar() }
+    pub fn is_tensor(&self) -> bool { self.0.is_tensor() }
 
     /// Return `true` if `self` has the given index.
     pub fn has_index(&self, index: &T) -> bool { self.0.has_index(index) }

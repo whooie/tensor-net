@@ -54,7 +54,14 @@ impl Idx for Q {
 }
 
 /// The result of a measurement.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone,
+    Debug,
+    PartialEq, Eq,
+    Hash,
+    PartialOrd, Ord,
+    Serialize, Deserialize
+)]
 pub enum Outcome {
     /// ∣0⟩
     Zero = 0,

@@ -1492,11 +1492,8 @@ where
         -> MPSResult<&mut Self>
     {
         if self.n == 1 || k >= self.n - 1 { return Ok(self); }
-        let dk = self.idxs[k].dim();
-        let dkp1 = self.idxs[k + 1].dim();
-        if op.shape() != (dk * dkp1, dk * dkp1) {
-            return Err(OperatorIncompatibleShape);
-        }
+        let d = self.idxs[k].dim() * self.idxs[k + 1].dim();
+        if op.shape() != (d, d) { return Err(OperatorIncompatibleShape); }
         self.map_pair(k, |mut g| { g.apply_op(op); g });
         self.local_renormalize(k);
         self.local_renormalize(k + 1);
