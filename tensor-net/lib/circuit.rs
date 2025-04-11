@@ -1,7 +1,5 @@
 //! Abstractions for driving layer-based circuits on qubits.
 
-#![allow(unused_imports)]
-
 use std::{
     borrow::Cow,
     io::{ Read, Write },
@@ -9,12 +7,12 @@ use std::{
 };
 use nalgebra as na;
 use num_complex::Complex64 as C64;
-use rand::{ Rng, thread_rng };
+use rand::Rng;
 use serde::{ Serialize, Deserialize };
 use thiserror::Error;
 use crate::{
     gate::{ Clifford, Gate },
-    mps::{ MPS, MPSError, MPSResult },
+    mps::{ MPS, MPSError },
     tensor::Idx,
 };
 

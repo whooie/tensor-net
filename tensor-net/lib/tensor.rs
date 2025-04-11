@@ -99,12 +99,8 @@
 //! //  [8, 8, 8, 8, 8]] { A, C }
 //! ```
 
-#![allow(unused_imports)]
-
 use std::{ collections::VecDeque, fmt, hash::Hash };
 use nalgebra::{ self as na, ComplexField };
-use num_traits::{ Zero, One };
-use rustc_hash::FxHashSet as HashSet;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -369,6 +365,7 @@ where T: Idx
         self.rowdim *= self.coldim;
     }
 
+    #[allow(dead_code)]
     fn outer_prod(mut self, mut rhs: Self) -> Self {
         self.make_vector();
         rhs.make_vector();
@@ -1459,3 +1456,4 @@ impl_fmt_derived!(fmt::LowerHex);
 impl_fmt_derived!(fmt::UpperHex);
 impl_fmt_derived!(fmt::Binary);
 impl_fmt_derived!(fmt::Pointer);
+

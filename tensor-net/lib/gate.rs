@@ -1926,6 +1926,7 @@ impl Tableau {
         self.x.iter().zip(self.z.iter())
     }
 
+    #[allow(dead_code)]
     fn iter_xz_mut(&mut self) -> impl Iterator<Item = (&mut Col, &mut Col)> + '_ {
         self.x.iter_mut().zip(self.z.iter_mut())
     }

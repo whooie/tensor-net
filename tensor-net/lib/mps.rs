@@ -1445,6 +1445,7 @@ where
     // those sites
     //
     // assumes `k` and `k + 1` are in bounds
+    #[allow(dead_code)]
     fn local_refactor(&mut self, k: usize) {
         self.map_pair(k, |g| g);
         self.local_renormalize(k);
