@@ -387,6 +387,66 @@ where T: na::ComplexField
         }
     }
 
+    #[allow(dead_code)]
+    fn apply_matrix2(&mut self, op: &na::Matrix2<T>) {
+        let (m, s, n) = self.dims();
+        if m == 1 {
+            let mut owned: na::DMatrix<T> = na::dmatrix!();
+            let mat = unsafe { self.make_lfused() };
+            mem::swap(mat, &mut owned);
+            *mat =
+                (op * owned)
+                .reshape_generic(na::Dyn(s), na::Dyn(n));
+        } else if n == 1 {
+            let mut owned: na::DMatrix<T> = na::dmatrix!();
+            let mat = unsafe { self.make_rfused() };
+            mem::swap(mat, &mut owned);
+            *mat =
+                (owned * op.transpose())
+                .reshape_generic(na::Dyn(m), na::Dyn(s));
+        } else {
+            let op_tr = op.transpose();
+            let data = unsafe { self.make_lfused() };
+            data.column_iter_mut()
+                .for_each(|col| {
+                    let mut col_mat =
+                        col.reshape_generic(na::Dyn(m), na::Dyn(s));
+                    let mul = &col_mat * &op_tr;
+                    col_mat.copy_from(&mul);
+                });
+        }
+    }
+
+    #[allow(dead_code)]
+    fn apply_matrix4(&mut self, op: &na::Matrix4<T>) {
+        let (m, s, n) = self.dims();
+        if m == 1 {
+            let mut owned: na::DMatrix<T> = na::dmatrix!();
+            let mat = unsafe { self.make_lfused() };
+            mem::swap(mat, &mut owned);
+            *mat =
+                (op * owned)
+                .reshape_generic(na::Dyn(s), na::Dyn(n));
+        } else if n == 1 {
+            let mut owned: na::DMatrix<T> = na::dmatrix!();
+            let mat = unsafe { self.make_rfused() };
+            mem::swap(mat, &mut owned);
+            *mat =
+                (owned * op.transpose())
+                .reshape_generic(na::Dyn(m), na::Dyn(s));
+        } else {
+            let op_tr = op.transpose();
+            let data = unsafe { self.make_lfused() };
+            data.column_iter_mut()
+                .for_each(|col| {
+                    let mut col_mat =
+                        col.reshape_generic(na::Dyn(m), na::Dyn(s));
+                    let mul = &col_mat * &op_tr;
+                    col_mat.copy_from(&mul);
+                });
+        }
+    }
+
     /// Like `scale_left`, but using SIMD.
     pub fn scale_left<I>(&mut self, weights: I)
     where I: IntoIterator<Item = T::RealField>
@@ -1689,6 +1749,22 @@ impl MPS<Q, C64> {
     {
         gates.into_iter()
             .for_each(|g| { self.apply_gate_rng(g, rng); });
+        self
+    }
+
+    #[allow(dead_code)]
+    fn apply_q1(&mut self, k: usize, op: &na::Matrix2<C64>) -> &mut Self {
+        if k >= self.n { return self; }
+        self.data[k].apply_matrix2(op);
+        self
+    }
+
+    #[allow(dead_code)]
+    fn apply_q2(&mut self, k: usize, op: &na::Matrix4<C64>) -> &mut Self {
+        if self.n == 1 || k >= self.n - 1 { return self; }
+        self.map_pair(k, |mut g| { g.apply_matrix4(op); g });
+        self.local_renormalize(k);
+        self.local_renormalize(k + 1);
         self
     }
 
