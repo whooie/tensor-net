@@ -96,26 +96,27 @@ enum Instance {
 }
 
 impl Instance {
-    fn fmt(&self, circ: usize, task_id: Option<&str>) -> String {
+    fn fmt(&self, circ: usize, task_id: Option<&str>, npz: bool) -> String {
+        let npz_ext = if npz { ".npz" } else { "" };
         match (self, task_id) {
             (Self::Unis, None) =>
-                format!("unis_seed={}_n={}_depth={}_circ={}",
-                    CIRCUIT_SEED, N, T, circ),
+                format!("unis_seed={}_n={}_depth={}_circ={}{}",
+                    CIRCUIT_SEED, N, T, circ, npz_ext),
             (Self::Meas, None) =>
-                format!("meas_seed={}_n={}_depth={}_plen={}_circ={}",
-                    CIRCUIT_SEED, N, T, P_MEAS.len(), circ),
+                format!("meas_seed={}_n={}_depth={}_plen={}_circ={}{}",
+                    CIRCUIT_SEED, N, T, P_MEAS.len(), circ, npz_ext),
             (Self::Output, None) =>
-                format!("haar_coev_probs_seed={}_n={}_depth={}_circ={}",
-                    CIRCUIT_SEED, N, T, circ),
+                format!("haar_coev_probs_seed={}_n={}_depth={}_circ={}{}",
+                    CIRCUIT_SEED, N, T, circ, npz_ext),
             (Self::Unis, Some(id)) =>
-                format!("unix_seed={}_n={}_depth={}_circ={}_id={}",
-                    CIRCUIT_SEED, N, T, circ, id),
+                format!("unix_seed={}_n={}_depth={}_circ={}_id={}{}",
+                    CIRCUIT_SEED, N, T, circ, id, npz_ext),
             (Self::Meas, Some(id)) =>
-                format!("meas_seed={}_n={}_depth={}_plen={}_circ={}_id={}",
-                    CIRCUIT_SEED, N, T, P_MEAS.len(), circ, id),
+                format!("meas_seed={}_n={}_depth={}_plen={}_circ={}_id={}{}",
+                    CIRCUIT_SEED, N, T, P_MEAS.len(), circ, id, npz_ext),
             (Self::Output, Some(id)) =>
-                format!("haar_coev_probs_seed={}_n={}_depth={}_circ={}_id={}",
-                    CIRCUIT_SEED, N, T, circ, id),
+                format!("haar_coev_probs_seed={}_n={}_depth={}_circ={}_id={}{}",
+                    CIRCUIT_SEED, N, T, circ, id, npz_ext),
         }
     }
 }
@@ -134,10 +135,10 @@ fn main() {
     let task_id = Alphanumeric.sample_string(&mut thread_rng(), 10);
 
     for i in 0..CIRCS {
-        if !circuit_dir.join(Instance::Unis.fmt(i, None)).is_file() {
+        if !circuit_dir.join(Instance::Unis.fmt(i, None, false)).is_file() {
             panic!("missing unitaries file for circuit {}", i);
         }
-        if !circuit_dir.join(Instance::Meas.fmt(i, None)).is_file() {
+        if !circuit_dir.join(Instance::Meas.fmt(i, None, false)).is_file() {
             panic!("missing measurement locations file for circuit {}", i);
         }
     }
@@ -163,9 +164,9 @@ fn main() {
             nd::Array::from_elem((n_p, RUNS, n_b, T, N), -1.0);
 
         let unis: Elements<UniSeq> = Elements::load(
-            circuit_dir.join(Instance::Unis.fmt(i, None))).unwrap();
+            circuit_dir.join(Instance::Unis.fmt(i, None, false))).unwrap();
         let meas: Elements<Elements<MeasSeq>> = Elements::load(
-            circuit_dir.join(Instance::Meas.fmt(i, None))).unwrap();
+            circuit_dir.join(Instance::Meas.fmt(i, None, false))).unwrap();
 
         eprint!(" {:w_p$} / {:w_p$} ", 0, n_p);
         let p_iter =
@@ -218,7 +219,7 @@ fn main() {
             eprint!("\x1b[{}D", 2 * w_run + 5);
         }
         eprint!("\x1b[{}D", 2 * w_p + 5);
-        let fname = Instance::Output.fmt(i, Some(&task_id));
+        let fname = Instance::Output.fmt(i, Some(&task_id), true);
         write_npz!(
             outdir.join(fname),
             arrays: {

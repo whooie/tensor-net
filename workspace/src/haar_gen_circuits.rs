@@ -16,7 +16,7 @@ const SEED: u64 = 10546;
 
 fn main() {
     let mut rng = StdRng::seed_from_u64(SEED);
-    let outdir = PathBuf::from("output").join("haar_circuits_na");
+    let outdir = PathBuf::from("output").join("haar_circuits");
     for i in 0 .. CIRCS {
         let unis: Elements<UniSeq> =
             (0..T)
