@@ -261,7 +261,10 @@ impl<T> Idxs<T> {
         IdxsIterMut { source: self.row.iter_mut().chain(self.col.iter_mut()) }
     }
 
-    fn transpose(&mut self) { std::mem::swap(&mut self.row, &mut self.col); }
+    fn transpose(&mut self) {
+        std::mem::swap(&mut self.row, &mut self.col);
+        std::mem::swap(&mut self.rowdim, &mut self.coldim);
+    }
 }
 
 impl<T> Idxs<T>
@@ -402,15 +405,16 @@ where T: Idx
             self.iter()
             .scan(1, |acc, idx| { *acc *= idx.dim(); Some(*acc) })
             .enumerate()
-            .find_map(|(k, rowdim)| (rowdim >= square_sidelen).then_some(k));
-        if let Some(k_cross) = square_crossing {
+            .min_by_key(|(_, rowdim)| rowdim.abs_diff(square_sidelen))
+            .map(|(k, _)| k);
+        if let Some(k0) = square_crossing {
             // square_crossing being Some implies that the total number of
             // indices is greater than 0
             let nrow = self.row.len();
-            if nrow > k_cross + 1 {
-                Some(ReshapeDir::LR(nrow - 1 - k_cross))
+            if nrow > k0 + 1 {
+                Some(ReshapeDir::LR(nrow - 1 - k0))
             } else {
-                Some(ReshapeDir::RL(k_cross + 1 - nrow))
+                Some(ReshapeDir::RL(k0 + 1 - nrow))
             }
         } else {
             None
@@ -699,17 +703,15 @@ where
             let scalar: A = elems(&[]);
             Ok(Self::Scalar(scalar))
         } else {
-            let strides: Vec<usize> =
-                indices.iter()
-                .scan(1, |acc, idx| { *acc *= idx.dim(); Some(*acc) })
-                .collect();
-            let len = *strides.last().unwrap();
+            let dims: Vec<usize> =
+                indices.iter().map(|idx| idx.dim()).collect();
+            let len: usize = dims.iter().product();
             if len == 0 { return Err(ZeroDimIndex); }
             let elem_iter =
                 (0..len)
                 .scan(
                     vec![0; indices.len()],
-                    |idxs, k| { ndinc(idxs, &strides, k); Some(elems(idxs)) },
+                    |idxs, k| { ndinc(idxs, &dims, k); Some(elems(idxs)) },
                 );
             let data: na::DMatrix<A> =
                 na::DMatrix::from_iterator(len, 1, elem_iter);
@@ -731,16 +733,14 @@ where
             let scalar: A = elems(&[]);
             Self::Scalar(scalar)
         } else {
-            let strides: Vec<usize> =
-                indices.iter()
-                .scan(1, |acc, idx| { *acc *= idx.dim(); Some(*acc) })
-                .collect();
-            let len = *strides.last().unwrap();
+            let dims: Vec<usize> =
+                indices.iter().map(|idx| idx.dim()).collect();
+            let len: usize = dims.iter().product();
             let elem_iter =
                 (0..len)
                 .scan(
                     vec![0; indices.len()],
-                    |idxs, k| { ndinc(idxs, &strides, k); Some(elems(idxs)) },
+                    |idxs, k| { ndinc(idxs, &dims, k); Some(elems(idxs)) },
                 );
             let data: na::DMatrix<A> =
                 na::DMatrix::from_iterator(len, 1, elem_iter);
@@ -880,17 +880,15 @@ where
         match self {
             Self::Scalar(a) => TensorData::Scalar(f(&[], a)),
             Self::Tensor(idxs, data) => {
-                let strides: Vec<usize> =
-                    idxs.iter()
-                    .scan(1, |acc, idx| { *acc *= idx.dim(); Some(*acc) })
-                    .collect();
-                let len = *strides.last().unwrap();
+                let dims: Vec<usize> =
+                    idxs.iter().map(|idx| idx.dim()).collect();
+                let len: usize = dims.iter().product();
                 let elem_iter =
                     data.iter().enumerate()
                     .scan(
                         vec![0; idxs.len()],
                         |idxs, (k, a)| {
-                            ndinc(idxs, &strides, k);
+                            ndinc(idxs, &dims, k);
                             Some(f(idxs, a))
                         },
                     );
@@ -909,15 +907,13 @@ where
         match self {
             Self::Scalar(a) => { *a = f(&[], &*a); },
             Self::Tensor(idxs, data) => {
-                let strides: Vec<usize> =
-                    idxs.iter()
-                    .scan(1, |acc, idx| { *acc *= idx.dim(); Some(*acc) })
-                    .collect();
+                let dims: Vec<usize> =
+                    idxs.iter().map(|idx| idx.dim()).collect();
                 data.iter_mut().enumerate()
                     .scan(
                         vec![0; idxs.len()],
                         |idxs, (k, a)| {
-                            ndinc(idxs, &strides, k);
+                            ndinc(idxs, &dims, k);
                             let a_new = f(idxs, &*a);
                             Some((a, a_new))
                         }
@@ -1182,10 +1178,10 @@ fn modinc(n: &mut usize, m: usize) -> bool {
     *n == 0
 }
 
-fn ndinc(idxs: &mut [usize], strides: &[usize], k: usize) {
+fn ndinc(idxs: &mut [usize], dims: &[usize], k: usize) {
     if k > 0 {
-        for (i, s) in idxs.iter_mut().zip(strides) {
-            if !modinc(i, *s) { break; }
+        for (i, d) in idxs.iter_mut().zip(dims) {
+            if !modinc(i, *d) { break; }
         }
     }
 }
