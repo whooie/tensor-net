@@ -18,15 +18,23 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum CircuitError {
+    /// Returned when a [`MPS`] encounters an error during a circuit-level
+    /// operation.
     #[error("MPS error: {0}")]
     MPSError(#[from] MPSError),
 
+    /// Returned when attempting to serialize a piece of data not supported by
+    /// the [`postcard`] format.
     #[error("serialization error: encountered unsupported data")]
     SerError,
 
+    /// Returned when either attempting to deserialize malformed binary data
+    /// (i.e. not in the [`postcard`] format) or attempting to to deserialize to
+    /// the wrong data type.
     #[error("deserialization error: malformed input")]
     DeserError,
 
+    /// General input/output error.
     #[error("IO error: {0}")]
     IOError(std::io::Error),
 }
@@ -757,9 +765,4 @@ where
     }
     Ok(())
 }
-
-// #[allow(clippy::mut_from_ref)]
-// unsafe fn make_mut<T>(x: &T) -> &mut T {
-//     std::ptr::from_ref(x).cast_mut().as_mut().unwrap()
-// }
 

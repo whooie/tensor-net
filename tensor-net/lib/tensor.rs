@@ -1,5 +1,3 @@
-#![allow(rustdoc::broken_intra_doc_links)]
-
 //! An N-dimensional array of data with shape determined by a set of numerical
 //! indices.
 //!
@@ -57,19 +55,23 @@
 //!   </p>
 //! </blockquote>
 //!
-//! # Example
+//! # Data representation
+//! `Tensor`s are backed by matrices provided by [`nalgebra`]. This requires the
+//! general N-dimensional mathematical structure to be "flattened" down to 2
+//! dimensions via index fusion, denoted with `<...>` in formatted output:
 //! ```
 //! use tensor_net::tensor::{ Idx, Tensor }; // see the Idx trait
 //!
 //! #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 //! enum Index { A, B, C }
+//! use Index::*;
 //!
 //! impl Idx for Index {
 //!     fn dim(&self) -> usize {
 //!         match self {
-//!             Self::A => 3,
-//!             Self::B => 4,
-//!             Self::C => 5,
+//!             A => 3,
+//!             B => 2,
+//!             C => 4,
 //!         }
 //!     }
 //! }
@@ -80,18 +82,62 @@
 //!     }
 //! }
 //!
-//! let a = Tensor::new([Index::A, Index::B], |_| 1.0).unwrap();
+//! let a: Tensor<Index, usize> =
+//!     Tensor::new([A, B, C], |ndidx| ndidx.iter().sum())
+//!     .unwrap();
 //! println!("{}", a);
-//! // { <A>, <B> }
+//! // { <A, B>, <C> }
 //! // ┌         ┐
+//! // │ 0 1 2 3 │ ← A = 0, B = 0
+//! // │ 1 2 3 4 │ ← A = 1, B = 0
+//! // │ 2 3 4 5 │ ← A = 2, B = 0
+//! // │ 1 2 3 4 │ ← A = 0, B = 1
+//! // │ 2 3 4 5 │ ← A = 1, B = 1
+//! // │ 3 4 5 6 │ ← A = 2, B = 1
+//! // └         ┘
+//! ```
+//! In the above, the formatted output (arrows added specially here) shows the
+//! tensor as a matrix with indices `A` and `B` fused in the row dimension, and
+//! `C` in the column dimension. Note that `nalgebra` matrices are
+//! *column-major*, which means indices fuse in column-major order as well.
+//!
+//! # Example
+//! ```
+//! # use tensor_net::tensor::{ Idx, Tensor };
+//! #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+//! enum Index { A, B, C, D }
+//! impl Idx for Index {
+//!     fn dim(&self) -> usize {
+//!         match self {
+//!             Self::A => 3,
+//!             Self::B => 2,
+//!             Self::C => 4,
+//!             Self::D => 5,
+//!         }
+//!     }
+//! }
+//!
+//! impl std::fmt::Display for Index {
+//!     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//!         write!(f, "{:?}", self)
+//!     }
+//! }
+//!
+//! let a = Tensor::new([Index::A, Index::B, Index::C], |_| 1.0).unwrap();
+//! println!("{}", a);
+//! // { <A, B>, <C> }
+//! // ┌         ┐
+//! // │ 1 1 1 1 │
+//! // │ 1 1 1 1 │
+//! // │ 1 1 1 1 │
 //! // │ 1 1 1 1 │
 //! // │ 1 1 1 1 │
 //! // │ 1 1 1 1 │
 //! // └         ┘
 //!
-//! let b = Tensor::new([Index::B, Index::C], |_| 2.0).unwrap();
+//! let b = Tensor::new([Index::C, Index::D], |_| 2.0).unwrap();
 //! println!("{}", b);
-//! // { <B>, <C> }
+//! // { <C>, <D> }
 //! // ┌           ┐
 //! // │ 2 2 2 2 2 │
 //! // │ 2 2 2 2 2 │
@@ -99,10 +145,13 @@
 //! // │ 2 2 2 2 2 │
 //! // └           ┘
 //!
-//! let c = a.contract(b).unwrap(); // C_{a,c} = A_{a,b} B_{b,c}
+//! let c = a * b; // C_{a,b,d} = A_{a,b,c} B_{c,d}
 //! println!("{}", c);
-//! // { <A>, <C> }
+//! // { <A, B>, <D> }
 //! // ┌           ┐
+//! // │ 8 8 8 8 8 │
+//! // │ 8 8 8 8 8 │
+//! // │ 8 8 8 8 8 │
 //! // │ 8 8 8 8 8 │
 //! // │ 8 8 8 8 8 │
 //! // │ 8 8 8 8 8 │
@@ -511,6 +560,9 @@ enum IndicesData<'a, T> {
     Tensor(IdxsIter<'a, T>),
 }
 
+/// Iterator over the indices of a tensor.
+///
+/// The iterator element type is `&'a T`.
 #[derive(Clone, Debug)]
 pub struct Indices<'a, T>(IndicesData<'a, T>);
 
@@ -542,6 +594,13 @@ enum IndicesMutData<'a, T> {
     Tensor(IdxsIterMut<'a, T>),
 }
 
+/// Iterator over mutable references to the indices of a tensor.
+///
+/// **Note:** Use of this iterator is generally discouraged since any mutation
+/// causing the expected dimension of a tensor index to disagree with the
+/// underlying data will cause unrecoverable errors.
+///
+/// The iterator element is `&'a mut T`.
 #[derive(Debug)]
 pub struct IndicesMut<'a, T>(IndicesMutData<'a, T>);
 
