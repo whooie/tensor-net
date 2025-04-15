@@ -977,14 +977,24 @@ where
         let i0: usize =
             match part.start_bound() {
                 Bound::Included(i) => *i,
-                Bound::Excluded(i) => i.saturating_add(1),
-                Bound::Unbounded   => 0,
+                Bound::Excluded(i) =>
+                    if *i == usize::MAX {
+                        return (na::dmatrix!(A::one()), Vec::new());
+                    } else {
+                        *i + 1
+                    },
+                Bound::Unbounded => 0,
             };
         let i1: usize =
             match part.end_bound() {
                 Bound::Included(i) => (*i).min(self.n - 1),
-                Bound::Excluded(i) => (*i).saturating_sub(1).min(self.n - 1),
-                Bound::Unbounded   => self.n - 1,
+                Bound::Excluded(i) =>
+                    if *i == 0 {
+                        return (na::dmatrix!(A::one()), Vec::new());
+                    } else {
+                        (*i - 1).min(self.n - 1)
+                    },
+                Bound::Unbounded => self.n - 1,
             };
         if i0 > i1 {
             return (na::dmatrix!(A::one()), Vec::new());
