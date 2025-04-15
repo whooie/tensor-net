@@ -918,6 +918,11 @@ where
     /// | ...         | ...                       | ...                          |
     /// | *n* – 2     | ∣11...10⟩                 | ∣01...11⟩                    |
     /// | *n* – 1     | ∣11...11⟩                 | ∣11...11⟩                    |
+    ///
+    /// See [`rcconv`] and [`crconv`] for conversion between row-major and
+    /// column-major orderings for general sets of physical indices, and
+    /// [`qbrev`] for the equivalent conversions between qubit-only sets of
+    /// indices.
     pub fn from_vector<I, J>(
         indices: I,
         state: J,
@@ -2042,6 +2047,329 @@ impl_fmt_mps!(fmt::LowerHex, "{:x}", "{:1$x}");
 impl_fmt_mps!(fmt::UpperHex, "{:X}", "{:1$X}");
 impl_fmt_mps!(fmt::Binary, "{:b}", "{:.1$b}");
 impl_fmt_mps!(fmt::Pointer, "{:p}", "{:.1$p}");
+
+#[derive(Clone, Debug)]
+struct Strides {
+    rstrides: Vec<usize>,
+    cstrides: Vec<usize>,
+    dims: Vec<usize>,
+    totaldim: usize,
+}
+
+impl Strides {
+    fn new<T>(indices: &[T]) -> Self
+    where T: Idx
+    {
+        let dims: Vec<usize> = indices.iter().map(|idx| idx.dim()).collect();
+        let mut cstrides: Vec<usize> =
+            [1].into_iter()
+            .chain(dims.iter().scan(1, |acc, dim| { *acc *= dim; Some(*acc) }))
+            .collect();
+        let Some(totaldim) = cstrides.pop() else { unreachable!() };
+        let rstrides: Vec<usize> =
+            cstrides.iter().skip(1)
+            .map(|cstride| totaldim / *cstride)
+            .chain([1])
+            .collect();
+        Self { rstrides, cstrides, dims, totaldim }
+    }
+
+    fn rravel(&self, idx_reg: &[usize]) -> usize {
+        idx_reg.iter().zip(&self.rstrides)
+            .map(|(j, stride)| j * stride)
+            .sum()
+    }
+
+    fn cravel(&self, idx_reg: &[usize]) -> usize {
+        idx_reg.iter().zip(&self.cstrides)
+            .map(|(j, stride)| j * stride)
+            .sum()
+    }
+
+    fn modinc(n: &mut usize, m: usize) -> bool {
+        *n = (*n + 1) % m;
+        *n == 0
+    }
+
+    fn rinc(&self, k: usize, idx_reg: &mut [usize]) {
+        if k > 0 {
+            for (i, d) in idx_reg.iter_mut().zip(&self.dims).rev() {
+                if !Self::modinc(i, *d) { break; }
+            }
+        }
+    }
+
+    fn cinc(&self, k: usize, idx_reg: &mut [usize]) {
+        if k > 0 {
+            for (i, d) in idx_reg.iter_mut().zip(&self.dims) {
+                if !Self::modinc(i, *d) { break; }
+            }
+        }
+    }
+
+    fn rciter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        (0..self.totaldim).scan(
+            vec![0; self.dims.len()],
+            |idxs, k_rowmaj| {
+                self.rinc(k_rowmaj, idxs);
+                let k_colmaj = self.cravel(idxs);
+                Some((k_rowmaj, k_colmaj))
+            },
+        )
+    }
+
+    fn criter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        (0..self.totaldim).scan(
+            vec![0; self.dims.len()],
+            |idxs, k_colmaj| {
+                self.cinc(k_colmaj, idxs);
+                println!("{:?}", idxs);
+                let k_rowmaj = self.rravel(idxs);
+                Some((k_colmaj, k_rowmaj))
+            },
+        )
+    }
+}
+
+/// Convert from row-major to column-major ordering for state vectors.
+///
+/// *Panics if the length of the vector does not agree with the dimensions of
+/// the indices.*
+///
+/// # Example
+/// ```
+/// use nalgebra as na;
+/// use tensor_net::{ mps::rcconv, tensor::Idx };
+///
+/// #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// enum Index { A, B }
+///
+/// impl Idx for Index {
+///     fn dim(&self) -> usize {
+///         match self {
+///             Self::A => 3,
+///             Self::B => 4,
+///         }
+///     }
+/// }
+///
+/// let indices: Vec<Index> = vec![Index::A, Index::B];
+///
+/// // row-major
+/// let u: na::DVector<usize> = na::dvector!(
+///     0,  // 0, 0
+///     1,  // 0, 1
+///     2,  // 0, 2
+///     3,  // 0, 3
+///     4,  // 1, 0
+///     5,  // 1, 1
+///     6,  // 1, 2
+///     7,  // 1, 3
+///     8,  // 2, 0
+///     9,  // 2, 1
+///     10, // 2, 2
+///     11, // 2, 3
+/// );
+///
+/// // row-major
+/// let v: na::DVector<usize> = na::dvector!(
+///     0,  // 0, 0
+///     4,  // 1, 0
+///     8,  // 2, 0
+///     1,  // 0, 1
+///     5,  // 1, 1
+///     9,  // 2, 1
+///     2,  // 0, 2
+///     6,  // 1, 2
+///     10, // 2, 2
+///     3,  // 0, 3
+///     7,  // 1, 3
+///     11, // 2, 3
+/// );
+///
+/// let u_conv = rcconv(&indices, &u);
+/// assert_eq!(u_conv, v);
+/// ```
+pub fn rcconv<T, A, R, S>(
+    indices: &[T],
+    v: &na::Vector<A, R, S>,
+) -> na::Vector<A, R, S>
+where
+    T: Idx,
+    A: na::Scalar,
+    R: na::Dim,
+    S: na::RawStorageMut<A, R, na::Const<1>> + Clone,
+{
+    if indices.is_empty() && v.len() == 1 { return v.clone(); }
+    let strides = Strides::new(indices);
+    let len = v.len();
+    if strides.totaldim != len {
+        panic!("\
+            rcconv: expected total dimension {}, but got {} vector elements",
+            strides.totaldim, len
+        );
+    }
+    let mut new = v.clone();
+    strides.rciter().zip(v.iter())
+        .for_each(|((_k_row, k_col), vk_row)| { new[k_col] = vk_row.clone(); });
+    new
+}
+
+/// Convert from column-major to row-major ordering for state vectors.
+///
+/// *Panics if the length of the vector does not agree with the dimensions of
+/// the indices.*
+///
+/// # Example
+/// ```
+/// use nalgebra as na;
+/// use tensor_net::{ mps::crconv, tensor::Idx };
+///
+/// #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+/// enum Index { A, B }
+///
+/// impl Idx for Index {
+///     fn dim(&self) -> usize {
+///         match self {
+///             Self::A => 3,
+///             Self::B => 4,
+///         }
+///     }
+/// }
+///
+/// let indices: Vec<Index> = vec![Index::A, Index::B];
+///
+/// // column-major
+/// let u: na::DVector<usize> = na::dvector!(
+///     0,  // 0, 0
+///     1,  // 1, 0
+///     2,  // 2, 0
+///     3,  // 0, 1
+///     4,  // 1, 1
+///     5,  // 2, 1
+///     6,  // 0, 2
+///     7,  // 1, 2
+///     8,  // 2, 2
+///     9,  // 0, 3
+///     10, // 1, 3
+///     11, // 2, 3
+/// );
+///
+/// // row-major
+/// let v: na::DVector<usize> = na::dvector!(
+///     0,  // 0, 0
+///     3,  // 0, 1
+///     6,  // 0, 2
+///     9,  // 0, 3
+///     1,  // 1, 0
+///     4,  // 1, 1
+///     7,  // 1, 2
+///     10, // 1, 3
+///     2,  // 2, 0
+///     5,  // 2, 1
+///     8,  // 2, 2
+///     11, // 2, 3
+/// );
+///
+/// let u_conv = crconv(&indices, &u);
+/// assert_eq!(u_conv, v);
+/// ```
+pub fn crconv<T, A, R, S>(
+    indices: &[T],
+    v: &na::Vector<A, R, S>,
+) -> na::Vector<A, R, S>
+where
+    T: Idx,
+    A: na::Scalar,
+    R: na::Dim,
+    S: na::RawStorageMut<A, R, na::Const<1>> + Clone,
+{
+    if indices.is_empty() && v.len() == 1 { return v.clone(); }
+    let strides = Strides::new(indices);
+    println!("{:?}", strides);
+    let len = v.len();
+    if strides.totaldim != len {
+        panic!("\
+            crconv: expected total dimension {}, but got {} vector elements",
+            strides.totaldim, len
+        );
+    }
+    let mut new = v.clone();
+    strides.criter().zip(v.iter())
+        .for_each(|((_k_col, k_row), vk_col)| { new[k_row] = vk_col.clone(); });
+    new
+}
+
+/// Swap between row-major/big-endian and column-major/little-endian orderings
+/// for state vectors of `n` qubits.
+///
+/// *Panics if the length of the vector is not `2^n`, or if `n > 32`.*
+///
+/// # Example
+/// ```
+/// use nalgebra as na;
+/// use tensor_net::mps::qbrev;
+///
+/// // length-8 state vectors (3 qubits)
+///
+/// // row-major
+/// let u: na::DVector<usize> = na::dvector!(
+///     0, // 000
+///     1, // 001
+///     2, // 010
+///     3, // 011
+///     4, // 100
+///     5, // 101
+///     6, // 110
+///     7, // 111
+/// );
+///
+/// // column-major
+/// let v: na::DVector<usize> = na::dvector!(
+///     0, // 000
+///     4, // 100
+///     2, // 010
+///     6, // 110
+///     1, // 001
+///     5, // 101
+///     3, // 011
+///     7, // 111
+/// );
+///
+/// let u_rev = qbrev(3, u);
+/// assert_eq!(u_rev, v);
+/// ```
+pub fn qbrev<A, R, S>(
+    n: u32,
+    mut v: na::Vector<A, R, S>,
+) -> na::Vector<A, R, S>
+where
+    A: na::Scalar,
+    R: na::Dim,
+    S: na::RawStorageMut<A, R, na::Const<1>>,
+{
+    if n > 32 {
+        panic!("qbrev: can't handle n > 32; use rcconv/crconv instead");
+    }
+    if n == 0 && v.len() == 1 { return v; }
+    let totaldim = 1_usize << n;
+    let len = v.len();
+    if totaldim != len {
+        panic!("\
+            qbrev: expected total dimension {}, but got {} vector elements",
+            totaldim, len
+        );
+    }
+    let mut swapped: Vec<u32> = Vec::with_capacity(len / 2);
+    for k in 0..totaldim as u32 {
+        let rev = k.reverse_bits() >> (32 - n);
+        println!("{:03b} {:03b}", k, rev);
+        if k == rev || swapped.contains(&k) { continue; }
+        v.swap_rows(k as usize, rev as usize);
+        swapped.push(rev);
+    }
+    v
+}
 
 #[allow(clippy::mem_replace_with_uninit)]
 unsafe fn replace_zeroed<T>(loc: &mut T) -> T {
