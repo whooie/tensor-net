@@ -687,10 +687,56 @@ where
     A: Eq,
 { }
 
+impl<T, A> TensorData<T, A> {
+    fn is_scalar(&self) -> bool { matches!(self, Self::Scalar(_)) }
+
+    fn is_tensor(&self) -> bool { matches!(self, Self::Tensor(..)) }
+}
+
+impl<T, A> TensorData<T, A>
+where T: Idx
+{
+    fn has_index(&self, index: &T) -> bool {
+        match self {
+            Self::Scalar(_) => false,
+            Self::Tensor(idxs, _) => idxs.contains(index),
+        }
+    }
+
+    fn rank(&self) -> usize {
+        match self {
+            Self::Scalar(_) => 0,
+            Self::Tensor(idxs, _) => idxs.len(),
+        }
+    }
+
+    fn shape(&self) -> Vec<usize> {
+        match self {
+            Self::Scalar(_) => Vec::new(),
+            Self::Tensor(idxs, _) => idxs.iter().map(|idx| idx.dim()).collect(),
+        }
+    }
+
+    fn indices(&self) -> Indices<'_, T> {
+        match self {
+            Self::Scalar(_) => Indices(IndicesData::Scalar),
+            Self::Tensor(idxs, _) => Indices(IndicesData::Tensor(idxs.iter())),
+        }
+    }
+
+    unsafe fn indices_mut(&mut self) -> IndicesMut<'_, T> {
+        match self {
+            Self::Scalar(_) => IndicesMut(IndicesMutData::Scalar),
+            Self::Tensor(idxs, _) =>
+                IndicesMut(IndicesMutData::Tensor(idxs.iter_mut())),
+        }
+    }
+}
+
 impl<T, A> TensorData<T, A>
 where
     T: Idx,
-    A: ComplexField,
+    A: na::Scalar,
 {
     fn new<I, F>(indices: I, mut elems: F) -> TensorResult<Self>
     where
@@ -799,46 +845,6 @@ where
         }
     }
 
-    fn is_scalar(&self) -> bool { matches!(self, Self::Scalar(_)) }
-
-    fn is_tensor(&self) -> bool { matches!(self, Self::Tensor(..)) }
-
-    fn has_index(&self, index: &T) -> bool {
-        match self {
-            Self::Scalar(_) => false,
-            Self::Tensor(idxs, _) => idxs.contains(index),
-        }
-    }
-
-    fn rank(&self) -> usize {
-        match self {
-            Self::Scalar(_) => 0,
-            Self::Tensor(idxs, _) => idxs.len(),
-        }
-    }
-
-    fn shape(&self) -> Vec<usize> {
-        match self {
-            Self::Scalar(_) => Vec::new(),
-            Self::Tensor(idxs, _) => idxs.iter().map(|idx| idx.dim()).collect(),
-        }
-    }
-
-    fn indices(&self) -> Indices<'_, T> {
-        match self {
-            Self::Scalar(_) => Indices(IndicesData::Scalar),
-            Self::Tensor(idxs, _) => Indices(IndicesData::Tensor(idxs.iter())),
-        }
-    }
-
-    unsafe fn indices_mut(&mut self) -> IndicesMut<'_, T> {
-        match self {
-            Self::Scalar(_) => IndicesMut(IndicesMutData::Scalar),
-            Self::Tensor(idxs, _) =>
-                IndicesMut(IndicesMutData::Tensor(idxs.iter_mut())),
-        }
-    }
-
     fn reshape_square(&mut self) {
         match self {
             Self::Scalar(_) => { },
@@ -871,7 +877,13 @@ where
             },
         }
     }
+}
 
+impl<T, A> TensorData<T, A>
+where
+    T: Idx,
+    A: ComplexField,
+{
     fn map<F, B>(&self, mut f: F) -> TensorData<T, B>
     where
         F: FnMut(&[usize], &A) -> B,
@@ -1214,10 +1226,53 @@ impl<T, A> From<TensorData<T, A>> for Tensor<T, A> {
     fn from(data: TensorData<T, A>) -> Self { Self(data) }
 }
 
+impl<T, A> Tensor<T, A> {
+    /// Return `true` if `self` has rank 0.
+    pub fn is_scalar(&self) -> bool { self.0.is_scalar() }
+
+    /// Return `true` if `self` has rank greater than 0.
+    pub fn is_tensor(&self) -> bool { self.0.is_tensor() }
+}
+
+impl<T, A> Tensor<T, A>
+where T: Idx
+{
+    /// Return `true` if `self` has the given index.
+    pub fn has_index(&self, index: &T) -> bool { self.0.has_index(index) }
+
+    /// Return the rank (i.e. the number of indices) of `self`.
+    pub fn rank(&self) -> usize { self.0.rank() }
+
+    /// Return the shape (dimensions of each index) of `self` in a vector.
+    ///
+    /// If `self` is a scalar, the returned vector is empty.
+    pub fn shape(&self) -> Vec<usize> { self.0.shape() }
+
+    /// Return an iterator over all indices.
+    ///
+    /// If `self` is a scalar, the iterator is empty.
+    pub fn indices(&self) -> Indices<'_, T> { self.0.indices() }
+
+    /// Return an iterator over mutable references to all indices.
+    ///
+    /// If `self` is a scalar, the iterator is empty.
+    ///
+    /// # Safety
+    /// Mutating an index in such a way that its dimension changes or it becomes
+    /// equal to another index in `self` or in an incommensurate way with
+    /// another index in a tensor network will cause unrecoverable errors in all
+    /// arithmetic operations and book-keeping. A call to this function is safe
+    /// iff mutations to the index do not change the index's dimension and still
+    /// allow the index to be identitfied with its tensor(s) within a network.
+    pub unsafe fn indices_mut(&mut self) -> IndicesMut<'_, T> {
+        self.0.indices_mut()
+    }
+}
+
 impl<T, A> Tensor<T, A>
 where
     T: Idx,
-    A: ComplexField,
+    A: na::Scalar,
 {
     /// Create a new tensor using a function over index values.
     pub fn new<I, F>(indices: I, elems: F) -> TensorResult<Self>
@@ -1275,49 +1330,12 @@ where
         TensorData::from_elems_unchecked(indices, elems).into()
     }
 
-    /// Return `true` if `self` has rank 0.
-    pub fn is_scalar(&self) -> bool { self.0.is_scalar() }
-
-    /// Return `true` if `self` has rank greater than 0.
-    pub fn is_tensor(&self) -> bool { self.0.is_tensor() }
-
-    /// Return `true` if `self` has the given index.
-    pub fn has_index(&self, index: &T) -> bool { self.0.has_index(index) }
-
-    /// Return the rank (i.e. the number of indices) of `self`.
-    pub fn rank(&self) -> usize { self.0.rank() }
-
-    /// Return the shape (dimensions of each index) of `self` in a vector.
-    ///
-    /// If `self` is a scalar, the returned vector is empty.
-    pub fn shape(&self) -> Vec<usize> { self.0.shape() }
-
     /// Reshape the underlying data array so that it can be represented as an
     /// approximately square matrix. This has no bearing on arithmetic
     /// operations, but can be nice if you want print the tensor data.
     ///
     /// This is a no-move, no-copy operation, and a no-op on scalars.
     pub fn reshape_square(&mut self) { self.0.reshape_square(); }
-
-    /// Return an iterator over all indices.
-    ///
-    /// If `self` is a scalar, the iterator is empty.
-    pub fn indices(&self) -> Indices<'_, T> { self.0.indices() }
-
-    /// Return an iterator over mutable references to all indices.
-    ///
-    /// If `self` is a scalar, the iterator is empty.
-    ///
-    /// # Safety
-    /// Mutating an index in such a way that its dimension changes or it becomes
-    /// equal to another index in `self` or in an incommensurate way with
-    /// another index in a tensor network will cause unrecoverable errors in all
-    /// arithmetic operations and book-keeping. A call to this function is safe
-    /// iff mutations to the index do not change the index's dimension and still
-    /// allow the index to be identitfied with its tensor(s) within a network.
-    pub unsafe fn indices_mut(&mut self) -> IndicesMut<'_, T> {
-        self.0.indices_mut()
-    }
 
     /// Apply a mapping function to all indices.
     ///
@@ -1337,7 +1355,13 @@ where
     {
         self.0.map_indices(f).into()
     }
+}
 
+impl<T, A> Tensor<T, A>
+where
+    T: Idx,
+    A: ComplexField,
+{
     /// Apply a mapping function to the (indexed) elements of `self`, returning
     /// a new tensor.
     pub fn map<F, B>(&self, f: F) -> Tensor<T, B>
