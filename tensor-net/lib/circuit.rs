@@ -684,7 +684,7 @@ where F: FnMut(usize) -> Option<T>
 pub fn uniform_meas<R>(nqubits: usize, p: f64, rng: &mut R) -> MeasSeq
 where R: Rng + ?Sized
 {
-    option_layer(nqubits, |k| (p < rng.gen::<f64>()).then_some(Meas::Rand(k)))
+    option_layer(nqubits, |k| (rng.gen::<f64>() < p).then_some(Meas::Rand(k)))
 }
 
 /// A collection of general operations.
