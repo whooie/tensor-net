@@ -571,7 +571,7 @@ macro_rules! impl_fmt_gamma {
                                 }
                             }
                             write!(f, " ] u={} v={}", u, v)?;
-                            if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                            if v < n - 1 || u < m - 1 { writeln!(f)?; }
                         }
                     }
                 } else if let GData::RFused(mat) = &self.data {
@@ -598,7 +598,7 @@ macro_rules! impl_fmt_gamma {
                                 }
                             }
                             write!(f, " ] u={} v={}", u, v)?;
-                            if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                            if v < n - 1 || u < m - 1 { writeln!(f)?; }
                         }
                     }
                 }
@@ -878,15 +878,17 @@ where
             q = qp;
             let mut g = Gamma::new_lfused(outdim, u);
             if let Some(slast) = svals.last() {
-                g.scale_left(slast.iter().copied());
+                g.scale_left(slast.iter().copied().map(|sv| sv.recip()));
             }
             data.push(g);
             svals.push(s);
             udim = rank;
         }
         // final Γ tensor
-        let mut g = Gamma::new_lfused(idxs[n - 1].dim(), q);
-        if n > 1 { g.scale_left(svals[n - 2].iter().copied()); }
+        let mut g = Gamma::new_rfused(idxs[n - 1].dim(), q);
+        if n > 1 {
+            g.scale_left(svals[n - 2].iter().copied().map(|sv| sv.recip()));
+        }
         data.push(g);
         (data, svals)
     }
@@ -1498,17 +1500,17 @@ where
             if k != self.n - 2 {
                 g2.scale_right(self.svals[k + 1].iter().copied());
             }
-            let mut g2_new = f(g2);
+            let g2_new = f(g2);
+            let (mut gl_new, lk_new, mut gr_new) =
+                g2_new.factor(lphys, rphys, self.trunc);
             if k != 0 {
-                g2_new.scale_left(
+                gl_new.scale_left(
                     self.svals[k - 1].iter().copied().map(|s| s.recip()));
             }
             if k != self.n - 2 {
-                g2_new.scale_right(
+                gr_new.scale_right(
                     self.svals[k + 1].iter().copied().map(|s| s.recip()));
             }
-            let (gl_new, lk_new, gr_new) =
-                g2_new.factor(lphys, rphys, self.trunc);
             let _ = mem::replace(&mut self.data[k], gl_new);
             self.svals[k] = lk_new;
             let _ = mem::replace(&mut self.data[k + 1], gr_new);
@@ -1534,7 +1536,7 @@ where
     fn refactor_sweep(&mut self) {
         for k in  0 .. self.n - 1        { self.map_pair(k, |g| g); }
         for k in (0 .. self.n - 2).rev() { self.map_pair(k, |g| g); }
-        for k in  0 .. self.n            { self.local_renormalize(k); }
+        // for k in  0 .. self.n            { self.local_renormalize(k); }
     }
 
     /// Apply an operator to the `k`-th particle in place.
@@ -1975,7 +1977,7 @@ macro_rules! impl_fmt_mps {
                                     }
                                 }
                                 write!(f, " ] u={} v={}", u, v)?;
-                                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                                if v < n - 1 || u < m - 1 { writeln!(f)?; }
                             }
                         }
                     } else if let GData::RFused(mat) = gamma.data() {
@@ -2003,7 +2005,7 @@ macro_rules! impl_fmt_mps {
                                     }
                                 }
                                 write!(f, " ] u={} v={}", u, v)?;
-                                if v < n - 1 && u < m - 1 { writeln!(f)?; }
+                                if v < n - 1 || u < m - 1 { writeln!(f)?; }
                             }
                         }
                     }

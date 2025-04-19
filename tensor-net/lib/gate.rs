@@ -1618,7 +1618,7 @@ where
     q.column_iter_mut().zip(&r.diagonal())
         .for_each(|(mut z_j, rjj)| {
             let renorm = *rjj / A::from_re(rjj.modulus());
-            z_j.iter_mut().for_each(|zij| { *zij /= renorm; });
+            z_j.iter_mut().for_each(|zij| { *zij *= renorm; });
         });
     q
 }
