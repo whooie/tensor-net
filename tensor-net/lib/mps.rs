@@ -89,7 +89,7 @@
 //!
 //! // contract the MPS into an ordinary 1D state vector
 //! let (state, _) = mps.into_vector();
-//! println!("{state:.2}");
+//! println!("{state}");
 //! // either [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 //! // or     [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 //! // based on the result of the measurement
@@ -447,7 +447,9 @@ where T: na::ComplexField
         }
     }
 
-    /// Like `scale_left`, but using SIMD.
+    /// Apply individual scaling factors to each of the left indices.
+    ///
+    /// This coerces `self` into right-fused form.
     pub fn scale_left<I>(&mut self, weights: I)
     where I: IntoIterator<Item = T::RealField>
     {
@@ -456,7 +458,9 @@ where T: na::ComplexField
             .for_each(|(mut row, w)| { row.scale_mut(w); });
     }
 
-    /// Like `scale_right`, but using SIMD.
+    /// Apply individual scaling factors to each of the right indices.
+    ///
+    /// This coerces `self` into left-fused form.
     pub fn scale_right<I>(&mut self, weights: I)
     where I: IntoIterator<Item = T::RealField>
     {
@@ -1856,7 +1860,7 @@ impl MPS<Q, C64> {
                 .map(|(p, prob)| (p.into(), prob)),
             Meas::Proj(k, p) =>
                 self.measure_postsel_prob(*k, *p as usize)
-                    .map(|prob| (*p, prob)),
+                .map(|prob| (*p, prob)),
         }
     }
 
@@ -2125,7 +2129,6 @@ impl Strides {
             vec![0; self.dims.len()],
             |idxs, k_colmaj| {
                 self.cinc(k_colmaj, idxs);
-                println!("{:?}", idxs);
                 let k_rowmaj = self.rravel(idxs);
                 Some((k_colmaj, k_rowmaj))
             },
@@ -2288,7 +2291,6 @@ where
 {
     if indices.is_empty() && v.len() == 1 { return v.clone(); }
     let strides = Strides::new(indices);
-    println!("{:?}", strides);
     let len = v.len();
     if strides.totaldim != len {
         panic!("\
@@ -2365,7 +2367,6 @@ where
     let mut swapped: Vec<u32> = Vec::with_capacity(len / 2);
     for k in 0..totaldim as u32 {
         let rev = k.reverse_bits() >> (32 - n);
-        println!("{:03b} {:03b}", k, rev);
         if k == rev || swapped.contains(&k) { continue; }
         v.swap_rows(k as usize, rev as usize);
         swapped.push(rev);
