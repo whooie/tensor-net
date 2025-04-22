@@ -22,6 +22,12 @@ serde = { version = "1.0.219", features = ["derive"] }
 statrs = "0.17.1"
 thiserror = "1.0.58"
 
+[dependencies.nalgebra-lapack]
+version = "0.25.0"
+default-features = false
+features = ["openblas"]
+optional = true
+
 [dev-dependencies.whooie]
 git = "https://gitlab.com/whooie/rust-lib.git"
 version = "*"
@@ -30,6 +36,9 @@ features = [ "ndarray-utils",]
 [lib]
 path = "lib/lib.rs"
 name = "tensor_net"
+
+[features]
+openblas = ["dep:nalgebra-lapack"]
 
 [profile.release]
 lto = true
