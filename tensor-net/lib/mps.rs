@@ -632,6 +632,171 @@ pub enum BondDim<A> {
     Cutoff(A),
 }
 
+// We require a different SVD than the one provided by nalgebra because
+// nalgebra's actually ends up giving a 1e-4--1e-3 element-wise error for an
+// unknown class of matrices [1]. This formulation has been tested for the
+// example case shown in [1], but not widely for many different kinds of
+// matrices. See `new` for mathematical details.
+//
+// [1] https://github.com/dimforge/nalgebra/issues/1172
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Svd<A>
+where A: na::ComplexField
+{
+    u: na::DMatrix<A>,
+    s: na::DVector<A::RealField>,
+    vt: na::DMatrix<A>,
+}
+
+impl<A> Svd<A>
+where A: ComplexScalar
+{
+    fn new(a: &na::DMatrix<A>) -> Self {
+        // This implementation of the SVD is taken from the solution used in
+        // nalgebra's source for the special case of a 3x3 real matrix (see
+        // nalgebra/src/linalg/svd3.rs [1]), with generalization to complex
+        // matrices of arbitrary size.
+        //
+        // The idea here is to observe that, given an arbitrary complex-valued
+        // matrix A, the matrix product A^H A (where ^H denotes the conjugate
+        // transpose) is guaranteed to be a Hermitian matrix whose eigenvalues
+        // are the squares of the singular values of A, and whose eigenvectors
+        // are the right singular vectors of A. Using the eigenvalue
+        // decomposition (which, thankfully, appears not to introduce numerical
+        // error like nalgebra's SVD), we can easily compute S and V^H in the
+        // target decomposition
+        //   A = U S V^H.
+        // In principle, we could then compute U as U = A V S^-1, but in
+        // practice this leads to numerical issues when A is not
+        // well-conditioned. To improve numerical robustness, we then find U by
+        // computing the QR decomposition of B = A V = U S. This is a scheme
+        // where we are guaranteed that U and V are orthonormal up to columns
+        // corresponding to NaN singular values, which can be easily filtered
+        // out. Additioanlly, taking the (squared) singular values from the
+        // (squared) column norms of B gives a better estimation of S.
+        //
+        // Unfortunately, this takes a little less than twice as long the usual
+        // SVD (i.e. nalgebra::Matrix::svd / nalgebra::linalg::Svd::new) since
+        // we're essentially decomposing A twice.
+        //
+        // [1] https://github.com/dimforge/nalgebra/blob/main/src/linalg/svd3.rs
+        let (m, n) = a.shape();
+        // split into cases based on the relative size of A^H A and A A^H -- I'm
+        // not sure this actually helps, though, since both cases require
+        // factorization of matrices with outer dimensions equal to both
+        // dimensions of A
+        if m < n {
+            let at = a.adjoint();
+            let aat = a * &at;
+            let mut u = aat.symmetric_eigen().eigenvectors;
+            let mut b = at * &u;
+            let mut s: na::DVector<A::RealField> =
+                na::DVector::from_iterator(
+                    m, b.column_iter().map(|col| col.norm_squared()));
+            if s.iter().any(|sv| sv.is_nan()) {
+                filter_normal_cols(&mut [&mut u, &mut b], &mut s);
+            }
+            sort_cols_with(&mut [&mut u, &mut b], &mut s);
+            let qr = b.qr();
+            let mut v = qr.q();
+            s.iter_mut().for_each(|sv| { *sv = sv.sqrt(); });
+            if v.is_square() {
+                v.adjoint_mut();
+            } else {
+                v = v.adjoint();
+            }
+            Self { u, s, vt: v }
+        } else {
+            let ata = a.ad_mul(a); // shape is nxn
+            let mut v = ata.symmetric_eigen().eigenvectors;
+            let mut b = a * &v;
+            let mut s: na::DVector<A::Re> =
+                na::DVector::from_iterator(
+                    n, b.column_iter().map(|col| col.norm_squared()));
+            if s.iter().any(|sv| sv.is_nan()) {
+                filter_normal_cols(&mut [&mut v, &mut b], &mut s);
+            }
+            sort_cols_with(&mut [&mut v, &mut b], &mut s);
+            let qr = b.qr();
+            let u = qr.q();
+            s.iter_mut().for_each(|sv| { *sv = sv.sqrt(); });
+            if v.is_square() {
+                v.adjoint_mut();
+            } else {
+                v = v.adjoint();
+            }
+            Self { u, s, vt: v }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn recompose(self) -> na::DMatrix<A> {
+        let Self { mut u, s, vt } = self;
+        u.column_iter_mut().zip(s.iter().copied())
+            .for_each(|(mut col, sv)| { col.scale_mut(sv); });
+        u * vt
+    }
+}
+
+fn sort_cols_with<A>(
+    cols: &mut [&mut na::DMatrix<A>],
+    vals: &mut na::DVector<A::Re>,
+)
+where A: ComplexScalar
+{
+    use nalgebra::{ PermutationSequence, RawStorage };
+    const VALUE_PROCESSED: usize = usize::MAX;
+    let mut vals_with_loc = vals.map_with_location(|r, _, e| (e, r));
+    vals_with_loc.as_mut_slice()
+        .sort_unstable_by(|(a, _), (b, _)| {
+            b.partial_cmp(a).expect("encountered NaN singular value")
+        });
+    vals.zip_apply(&vals_with_loc, |val, (new_val, _)| {
+        val.clone_from(&new_val);
+    });
+    let mut perms =
+        PermutationSequence::identity_generic(vals_with_loc.data.shape().0);
+    for i in 0..vals_with_loc.len() {
+        let mut index_1 = i;
+        let mut index_2 = vals_with_loc[i].1;
+
+        while
+            index_2 != VALUE_PROCESSED
+            && vals_with_loc[index_2].1 != VALUE_PROCESSED
+        {
+            perms.append_permutation(index_1, index_2);
+            vals_with_loc[index_1].1 = VALUE_PROCESSED;
+
+            index_1 = index_2;
+            index_2 = vals_with_loc[index_1].1;
+        }
+    }
+    cols.iter_mut().for_each(|cc| { perms.permute_columns(cc); });
+}
+
+fn filter_normal_cols<A>(
+    cols: &mut [&mut na::DMatrix<A>],
+    vals: &mut na::DVector<A::Re>,
+)
+where A: ComplexScalar
+{
+    let n = vals.len();
+    let n_normal = vals.iter().filter(|sv| sv.is_normal()).count();
+    for targ in n_normal .. n {
+        if !vals[targ].is_normal() { continue; }
+        let mb_src =
+            vals.iter().take(n_normal).enumerate()
+            .find_map(|(k, sv)| (!sv.is_normal()).then_some(k));
+        if let Some(src) = mb_src {
+            vals.swap_rows(src, targ);
+            cols.iter_mut().for_each(|cc| { cc.swap_columns(src, targ); });
+        }
+    }
+    vals.resize_vertically_mut(n_normal, A::Re::zero());
+    cols.iter_mut()
+        .for_each(|cc| { cc.resize_horizontally_mut(n_normal, A::zero()); });
+}
+
 /// Data struct holding a Schmidt decomposition repurposed for MPS
 /// factorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -663,10 +828,14 @@ where T: ComplexScalar
         remul_svals: bool,
     ) -> Self
     {
-        let svd = q.svd(true, true);
-        let Some(mut u) = svd.u else { unreachable!() };
-        let mut s = svd.singular_values;
-        let Some(mut q) = svd.v_t else { unreachable!() };
+        /* nalgebra's svd: fast but leads to 1e-4 error */
+        // let svd = q.svd(true, true);
+        // let Some(mut u) = svd.u else { unreachable!() };
+        // let mut s = svd.singular_values;
+        // let Some(mut q) = svd.v_t else { unreachable!() };
+        /* SVD via eigen decomp + QR decomp: accurate, but slower */
+        let Svd { mut u, mut s, vt: mut q } = Svd::new(&q);
+
         let mut norm: T::Re =
             s.iter()
             .filter(|sj| sj.is_normal())
@@ -1745,6 +1914,31 @@ where
         self.local_renormalize(k + 1);
     }
 
+    #[allow(dead_code)]
+    fn check_nan(&mut self) {
+        let mut has_nan: bool = false;
+        for (k, gk) in self.data.iter_mut().enumerate() {
+            unsafe {
+                if gk.make_lfused().iter().any(|gg| gg.is_nan()) {
+                    has_nan = true;
+                    println!("NaN found in data[{k}]");
+                }
+            }
+        }
+        for (k, lk) in self.svals.iter().enumerate() {
+            if lk.iter().any(|ll| ll.is_nan()) {
+                has_nan = true;
+                println!("NaN found in svals[{k}]");
+            }
+        }
+        if has_nan {
+            for k in 0 .. self.n {
+                println!("{} local norm: {:.6?}", k, self.local_norm(k));
+            }
+            panic!("NaNs detected");
+        }
+    }
+
     // apply a full bidirectional refactoring sweep of the MPS, avoiding the
     // double-refactor of the last bond
     //
@@ -1808,8 +2002,18 @@ where
     fn sample_state<R>(&self, k: usize, rng: &mut R) -> (usize, A::Re)
     where R: Rng + ?Sized
     {
-        let r: A::Re = rng.gen();
+        let one = A::Re::one();
+        let ten = (0..10).fold(A::Re::zero(), |acc, _| acc + one);
+        let eps = ten.powi(-9);
         let probs: Vec<A::Re> = self.local_probs(k);
+        let total_prob: A::Re =
+            probs.iter().copied().fold(A::Re::zero(), Add::add);
+        if (total_prob - one).abs() > eps {
+            panic!("encountered improperly normalized probabilities");
+            // unsafe { make_mut(self).local_renormalize(k); }
+            // probs = self.local_probs(k);
+        }
+        let r: A::Re = rng.gen();
         let p =
             probs.iter().copied()
             .scan(A::Re::zero(), |cu, pr| { *cu += pr; Some(*cu) })
