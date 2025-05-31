@@ -2380,7 +2380,7 @@ impl Strides {
 ///     11, // 2, 3
 /// );
 ///
-/// // row-major
+/// // column-major
 /// let v: na::DVector<usize> = na::dvector!(
 ///     0,  // 0, 0
 ///     4,  // 1, 0
