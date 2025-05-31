@@ -124,6 +124,14 @@ name = "haar_coev_probs_batching"
 path = "src/haar_coev_probs_by_circ.rs"
 name = "haar_coev_probs_by_circ"
 
+[[bin]]
+path = "src/haar_gen_circuits_p.rs"
+name = "haar_gen_circuits_p"
+
+[[bin]]
+path = "src/haar_coev_probs_by_circ_p.rs"
+name = "haar_coev_probs_by_circ_p"
+
 [profile.release]
 lto = true
 panic = "abort"
