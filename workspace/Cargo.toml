@@ -8,7 +8,7 @@ edition = "2021"
 # anyhow = "*"
 # thiserror = "*"
 itertools = "0.13.0"
-ndarray = { version = "0.15.6", features = [ "default", "rayon",] }
+ndarray = { version = "0.15.6", features = [ "default", "rayon", "serde"] }
 num-complex = "0.4.6"
 num-traits = "0.2.19"
 once_cell = "1.20.2"
@@ -17,7 +17,8 @@ rayon = "1.10.0"
 tensor-net = { path = "../tensor-net", version = "*" }
 # clifford-sim = { path = "/home/whooie/Documents/UIUC/01clifford_sim/clifford_sim", version = "*" }
 clifford-sim = { git = "https://gitlab.com/whooie/clifford-sim", version = "*" }
-nalgebra = "0.33.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_cbor = "0.11.2"
 
 [dependencies.whooie]
 git = "https://gitlab.com/whooie/rust-lib.git"
@@ -28,89 +29,89 @@ features = [ "ndarray-utils",]
 path = "lib/lib.rs"
 name = "lib"
 
-[[bin]]
-path = "src/entropy.rs"
-name = "entropy"
-
-[[bin]]
-path = "src/phase_transition.rs"
-name = "phase_transition"
-
-[[bin]]
-path = "src/state.rs"
-name = "state"
-
-[[bin]]
-path = "src/fixed_circuit.rs"
-name = "fixed_circuit"
-
-[[bin]]
-path = "src/fixed_circuit_conserv.rs"
-name = "fixed_circuit_conserv"
-
-[[bin]]
-path = "src/fixed_conserv_exact.rs"
-name = "fixed_conserv_exact"
-
-[[bin]]
-path = "src/testing.rs"
-name = "testing"
-
-[[bin]]
-path = "src/sampling_testing.rs"
-name = "sampling_testing"
-
-[[bin]]
-path = "src/rotation_testing.rs"
-name = "rotation_testing"
-
-[[bin]]
-path = "src/correlation_testing.rs"
-name = "correlation_testing"
-
-[[bin]]
-path = "src/naive_testing.rs"
-name = "naive_testing"
-
-[[bin]]
-path = "src/density_mat_testing.rs"
-name = "density_mat_testing"
-
-[[bin]]
-path = "src/clifford.rs"
-name = "clifford"
-
-[[bin]]
-path = "src/clifford_testing.rs"
-name = "clifford_testing"
-
-[[bin]]
-path = "src/haar_mixing.rs"
-name = "haar_mixing"
-
-[[bin]]
-path = "src/clifford_mixing.rs"
-name = "clifford_mixing"
-
-[[bin]]
-path = "src/haar_state_gen.rs"
-name = "haar_state_gen"
-
-[[bin]]
-path = "src/haar_coev_probs.rs"
-name = "haar_coev_probs"
-
-[[bin]]
-path = "src/circuit_file_test.rs"
-name = "circuit_file_test"
+# [[bin]]
+# path = "src/entropy.rs"
+# name = "entropy"
+#
+# [[bin]]
+# path = "src/phase_transition.rs"
+# name = "phase_transition"
+#
+# [[bin]]
+# path = "src/state.rs"
+# name = "state"
+#
+# [[bin]]
+# path = "src/fixed_circuit.rs"
+# name = "fixed_circuit"
+#
+# [[bin]]
+# path = "src/fixed_circuit_conserv.rs"
+# name = "fixed_circuit_conserv"
+#
+# [[bin]]
+# path = "src/fixed_conserv_exact.rs"
+# name = "fixed_conserv_exact"
+#
+# [[bin]]
+# path = "src/testing.rs"
+# name = "testing"
+#
+# [[bin]]
+# path = "src/sampling_testing.rs"
+# name = "sampling_testing"
+#
+# [[bin]]
+# path = "src/rotation_testing.rs"
+# name = "rotation_testing"
+#
+# [[bin]]
+# path = "src/correlation_testing.rs"
+# name = "correlation_testing"
+#
+# [[bin]]
+# path = "src/naive_testing.rs"
+# name = "naive_testing"
+#
+# [[bin]]
+# path = "src/density_mat_testing.rs"
+# name = "density_mat_testing"
+#
+# [[bin]]
+# path = "src/clifford.rs"
+# name = "clifford"
+#
+# [[bin]]
+# path = "src/clifford_testing.rs"
+# name = "clifford_testing"
+#
+# [[bin]]
+# path = "src/haar_mixing.rs"
+# name = "haar_mixing"
+#
+# [[bin]]
+# path = "src/clifford_mixing.rs"
+# name = "clifford_mixing"
+#
+# [[bin]]
+# path = "src/haar_state_gen.rs"
+# name = "haar_state_gen"
+#
+# [[bin]]
+# path = "src/circuit_file_test.rs"
+# name = "circuit_file_test"
+#
+# [[bin]]
+# path = "src/haar_coev_probs_batching.rs"
+# name = "haar_coev_probs_batching"
 
 [[bin]]
 path = "src/haar_gen_circuits.rs"
 name = "haar_gen_circuits"
 
 [[bin]]
-path = "src/haar_coev_probs_batching.rs"
-name = "haar_coev_probs_batching"
+path = "src/haar_coev_probs.rs"
+name = "haar_coev_probs"
 
 [profile.release]
 lto = true

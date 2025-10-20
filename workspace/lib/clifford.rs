@@ -157,7 +157,7 @@ impl UniLayer {
     where R: Rng + ?Sized
     {
         let data: Vec<Uni> =
-            TileQ2::new(offs, n)
+            TileQ2::new(n, offs)
             .map(|k| {
                 let mut gates: Vec<Gate> =
                     Clifford::gen(2, rng).unpack().0;
