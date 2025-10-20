@@ -1,6 +1,7 @@
 //! Definitions of common one- and two-qubit gates for use with
-//! [`MPS`][crate::mps::MPS] and [`MPSCircuit`][crate::circuit::MPSCircuit].
+//! [`MPS`][crate::mps::MPS].
 
+use std::borrow::Cow;
 use itertools::Itertools;
 use ndarray as nd;
 use ndarray_linalg::QRSquareInplace;
@@ -9,8 +10,10 @@ use num_traits::One;
 use once_cell::sync::Lazy;
 use rand::{
     Rng,
+    thread_rng,
     distributions::Distribution,
 };
+use serde::{ Serialize, Deserialize };
 use statrs::distribution::Normal;
 use crate::ComplexFloatExt;
 
@@ -18,7 +21,7 @@ use crate::ComplexFloatExt;
 ///
 /// Two-qubit gates are limited to nearest neighbors, with the held value always
 /// referring to the leftmost of the two relevant qubit indices.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Gate {
     /// A gate formed from an Euler angle decomposition.
     U(usize, f64, f64, f64),
@@ -91,6 +94,29 @@ impl Gate {
 
     /// Return `true` if `self` is `Haar2`.
     pub fn is_haar2(&self) -> bool { matches!(self, Self::Haar2(..)) }
+
+    /// Return `true` if `self` is a one-qubit gate.
+    pub fn is_q1(&self) -> bool {
+        matches!(
+            self,
+            Self::U(..)
+            | Self::H(..)
+            | Self::X(..)
+            | Self::Z(..)
+            | Self::S(..)
+            | Self::SInv(..)
+            | Self::XRot(..)
+            | Self::ZRot(..)
+        )
+    }
+
+    /// Return `true` if `self` is a two-qubit gate.
+    pub fn is_q2(&self) -> bool {
+        matches!(
+            self,
+            Self::CX(..) | Self::CXRev(..) | Self::CZ(..) | Self::Haar2(..)
+        )
+    }
 
     /// Return the [kind][G] of `self`.
     pub fn kind(&self) -> G {
@@ -167,6 +193,72 @@ impl Gate {
             Self::CXRev(k) => *k,
             Self::CZ(k) => *k,
             Self::Haar2(k) => *k,
+        }
+    }
+
+    /// Return a mutable reference to the index of the (left-most) qubit that
+    /// the unitary acts on.
+    pub fn idx_mut(&mut self) -> &mut usize {
+        match self {
+            Self::U(k, ..) => k,
+            Self::H(k) => k,
+            Self::X(k) => k,
+            Self::Z(k) => k,
+            Self::S(k) => k,
+            Self::SInv(k) => k,
+            Self::XRot(k, _) => k,
+            Self::ZRot(k, _) => k,
+            Self::CX(k) => k,
+            Self::CXRev(k) => k,
+            Self::CZ(k) => k,
+            Self::Haar2(k) => k,
+        }
+    }
+
+    /// Return `self` as a matrix with the relevant target qubit index.
+    ///
+    /// Note that the `Haar2` variant will require random sampling, for which
+    /// the local thread generator will need to be acquired here and then
+    /// released immediately afterward. If you are creating matrices for many of
+    /// these variants, this will be inefficient and you may wish to use
+    /// [`into_matrix_rng`][Self::into_matrix_rng] instead, which takes a cached
+    /// generator as argument; this is also useful for fixed-seed applications.
+    pub fn into_matrix(self) -> (usize, Cow<'static, nd::Array2<C64>>) {
+        match self {
+            Self::U(k, a, b, c) => (k, Cow::Owned(make_u(a, b, c))),
+            Self::H(k) => (k, Cow::Borrowed(Lazy::force(&HMAT))),
+            Self::X(k) => (k, Cow::Borrowed(Lazy::force(&XMAT))),
+            Self::Z(k) => (k, Cow::Borrowed(Lazy::force(&ZMAT))),
+            Self::S(k) => (k, Cow::Borrowed(Lazy::force(&SMAT))),
+            Self::SInv(k) => (k, Cow::Borrowed(Lazy::force(&SINVMAT))),
+            Self::XRot(k, ang) => (k, Cow::Owned(make_xrot(ang))),
+            Self::ZRot(k, ang) => (k, Cow::Owned(make_zrot(ang))),
+            Self::CX(k) => (k, Cow::Borrowed(Lazy::force(&CXMAT))),
+            Self::CXRev(k) => (k, Cow::Borrowed(Lazy::force(&CXREVMAT))),
+            Self::CZ(k) => (k, Cow::Borrowed(Lazy::force(&CZMAT))),
+            Self::Haar2(k) => (k, Cow::Owned(haar(2, &mut thread_rng()))),
+        }
+    }
+
+    /// Like [`into_matrix`][Self::into_matrix], but taking a cached random
+    /// generator as an argument.
+    pub fn into_matrix_rng<R>(self, rng: &mut R)
+        -> (usize, Cow<'static, nd::Array2<C64>>)
+    where R: Rng + ?Sized
+    {
+        match self {
+            Self::U(k, a, b, c) => (k, Cow::Owned(make_u(a, b, c))),
+            Self::H(k) => (k, Cow::Borrowed(Lazy::force(&HMAT))),
+            Self::X(k) => (k, Cow::Borrowed(Lazy::force(&XMAT))),
+            Self::Z(k) => (k, Cow::Borrowed(Lazy::force(&ZMAT))),
+            Self::S(k) => (k, Cow::Borrowed(Lazy::force(&SMAT))),
+            Self::SInv(k) => (k, Cow::Borrowed(Lazy::force(&SINVMAT))),
+            Self::XRot(k, ang) => (k, Cow::Owned(make_xrot(ang))),
+            Self::ZRot(k, ang) => (k, Cow::Owned(make_zrot(ang))),
+            Self::CX(k) => (k, Cow::Borrowed(Lazy::force(&CXMAT))),
+            Self::CXRev(k) => (k, Cow::Borrowed(Lazy::force(&CXREVMAT))),
+            Self::CZ(k) => (k, Cow::Borrowed(Lazy::force(&CZMAT))),
+            Self::Haar2(k) => (k, Cow::Owned(haar(2, rng))),
         }
     }
 }

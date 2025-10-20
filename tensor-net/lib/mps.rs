@@ -117,7 +117,7 @@ use rand::{
 use thiserror::Error;
 use crate::{
     ComplexFloatExt,
-    circuit::Q,
+    circuit::{ Q, Uni, Meas, Op, Outcome },
     gate::{ self, Gate },
     network::{ Network, Pool },
     tensor::{ Idx, Tensor },
@@ -1468,24 +1468,24 @@ where
     /// index value of the (randomized) outcome state for that particle.
     ///
     /// If `k` is out of bounds, do nothing and return `None`.
-    // ///
-    // /// **Note**: This operation requires contracting the state and then
-    // /// performing a refactor on each bond in the MPS after applying the
-    // /// projective measurement. If multiple measurements are required, consider
-    // /// using [`Self::measure_multi`], which only contracts and refactors bonds
-    // /// once.
     pub fn measure<R>(&mut self, k: usize, rng: &mut R) -> Option<usize>
+    where R: Rng + ?Sized
+    {
+        self.measure_prob(k, rng).map(|(p, _)| p)
+    }
+
+    /// Like [`measure`][Self::measure], but returning the probability of the
+    /// outcome alongside the outcome itself.
+    pub fn measure_prob<R>(&mut self, k: usize, rng: &mut R)
+        -> Option<(usize, A::Re)>
     where R: Rng + ?Sized
     {
         if k >= self.n { return None; }
         let (p, prob) = self.sample_state(k, rng);
         let renorm = A::from_re(prob.sqrt());
         self.project(k, p, renorm);
-        // self.refactor_lrsweep();
         self.refactor_sweep();
-        // self.refactor_sweep_centered(k);
-        // self.refactor();
-        Some(p)
+        Some((p, prob))
     }
 
     /// Perform a projective measurement on the `k`-th particle, post-selected
@@ -1493,63 +1493,166 @@ where
     ///
     /// If `k` is out of bounds or `p` is an invalid quantum number, do nothing.
     pub fn measure_postsel(&mut self, k: usize, p: usize) {
-        if k >= self.n || p >= self.outs[k].dim() { return; }
-        let renorm = A::from_re(Float::sqrt(self.local_prob(k, p)));
-        self.project(k, p, renorm);
-        self.refactor_sweep();
+        self.measure_postsel_prob(k, p);
     }
 
-    // /// Perform a batched series of projective measurements on selected
-    // /// particles, reporting the index values of each (randomized) outcome
-    // /// states for those particles. Projections are performed and outcomes
-    // /// reported in the order the particle indices are seen.
-    // ///
-    // /// If any particle index is out of bounds, no projection is performed and
-    // /// its outcome is omitted.
-    // pub fn measure_multi<I, R>(&mut self, particles: I, rng: &mut R)
-    //     -> Vec<usize>
-    // where
-    //     I: IntoIterator<Item = usize>,
-    //     R: Rng + ?Sized,
-    // {
-    //     let n = self.n;
-    //     let mut particles: Vec<usize>
-    //         = particles.into_iter().filter(|k| *k < n).collect();
-    //     if particles.is_empty() { return particles; }
-    //
-    //     let re_zero = <A as ComplexFloat>::Real::zero();
-    //     let mut probs: nd::ArrayD<<A as ComplexFloat>::Real>
-    //         = self.contract_nd()
-    //         .mapv(|a| (a * a.conj()).re());
-    //     particles.iter_mut()
-    //         .for_each(|k| {
-    //             let r: <A as ComplexFloat>::Real = rng.gen();
-    //             let (p, prob)
-    //                 = probs.axis_iter(nd::Axis(*k))
-    //                 .map(|slice| slice.sum())
-    //                 .scan(re_zero, |cu, pr| { *cu = *cu + pr; Some((*cu, pr)) })
-    //                 .enumerate()
-    //                 .find_map(|(j, (cu, pr))| (r < cu).then_some((j, pr)))
-    //                 .unwrap();
-    //             let renorm = A::from_re(Float::sqrt(prob));
-    //
-    //             self.project(*k, p, renorm);
-    //             probs.axis_iter_mut(nd::Axis(*k))
-    //                 .enumerate()
-    //                 .for_each(|(j, mut slice)| {
-    //                     if j == p {
-    //                         slice.map_inplace(|pr| { *pr = *pr / prob; });
-    //                     } else {
-    //                         slice.fill(re_zero);
-    //                     }
-    //                 });
-    //             *k = p;
-    //         });
-    //     self.refactor_sweep();
-    //     // self.refactor_lrsweep();
-    //     // self.refactor_rlsweep();
-    //     particles
-    // }
+    /// Like [`measure_postsel`][Self::measure_postsel], but returning the
+    /// probability of the outcome alongside the outcome itself.
+    pub fn measure_postsel_prob(&mut self, k: usize, p: usize)
+        -> Option<A::Re>
+    {
+        if k >= self.n || p >= self.outs[k].dim() { return None; }
+        let prob = self.local_prob(k, p);
+        let renorm = A::from_re(Float::sqrt(prob));
+        self.project(k, p, renorm);
+        self.refactor_sweep();
+        Some(prob)
+    }
+
+    /// Perform a batched series of projective measurements on selected
+    /// particles, reporting the index values of each (randomized) outcome
+    /// states for those particles. Projections are performed and outcomes
+    /// reported in increasing particle index order.
+    ///
+    /// If any particle index is out of bounds, no projection is performed and
+    /// its outcome is omitted. Duplicate indices are ignored.
+    pub fn measure_layer<I, R>(&mut self, particles: I, rng: &mut R)
+        -> Vec<usize>
+    where
+        I: IntoIterator<Item = usize>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<usize> =
+            particles.into_iter().filter(|k| *k < self.n).collect();
+        if particles.is_empty() { return particles; }
+        particles.sort_unstable();
+        particles.dedup();
+
+        let mut mb_last: Option<usize> = None;
+        for k in particles.iter_mut() {
+            if let Some(last) = mb_last {
+                (last .. *k).for_each(|j| { self.local_refactor(j); });
+            }
+            let (p, prob) = self.sample_state(*k, rng);
+            let renorm = A::from_re(prob.sqrt());
+            self.project(*k, p, renorm);
+            mb_last = Some(*k);
+            *k = p;
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        particles
+    }
+
+    /// Like [`measure_layer`][Self::measure_layer], but returning the
+    /// probabilities of each outcome alongside the outcomes themselves.
+    pub fn measure_prob_layer<I, R>(&mut self, particles: I, rng: &mut R)
+        -> Vec<(usize, A::Re)>
+    where
+        I: IntoIterator<Item = usize>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<usize> =
+            particles.into_iter().filter(|k| *k < self.n).collect();
+        if particles.is_empty() { return Vec::new(); }
+        particles.sort_unstable();
+        particles.dedup();
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<(usize, A::Re)> = Vec::with_capacity(particles.len());
+        for k in particles.into_iter() {
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            let (p, prob) = self.sample_state(k, rng);
+            let renorm = A::from_re(prob.sqrt());
+            self.project(k, p, renorm);
+            mb_last = Some(k);
+            res.push((p, prob));
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
+    }
+
+    /// Perform a batched series of projective measurements on selected
+    /// particles, post-selected to particular outcomes. Projections are
+    /// performed in increasing particle index order.
+    ///
+    /// If any particle index is out of bounds, no projection is performed.
+    /// Duplicate indices and invalid quantum numbers are ignored. Projections
+    /// are expected in `(particle index, particle state)` form.
+    pub fn measure_postsel_layer<I, R>(&mut self, particles: I)
+    where
+        I: IntoIterator<Item = (usize, usize)>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<(usize, usize)> =
+            particles.into_iter()
+            .filter(|&(k, p)| k < self.n && p < self.outs[k].dim())
+            .collect();
+        if particles.is_empty() { return; }
+        particles.sort_by_key(|(k, _)| *k);
+        particles.dedup_by_key(|(k, _)| *k);
+
+        let mut mb_last: Option<usize> = None;
+        for (k, p) in particles.into_iter() {
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            let prob = self.local_prob(k, p);
+            let renorm = A::from_re(Float::sqrt(prob));
+            self.project(k, p, renorm);
+            mb_last = Some(k);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+    }
+
+    /// Like [`measure_postsel_layer`][Self::measure_postsel_layer], but
+    /// returning the probability of each outcome after projecting.
+    pub fn measure_postsel_prob_layer<I, R>(&mut self, particles: I)
+        -> Vec<A::Re>
+    where
+        I: IntoIterator<Item = (usize, usize)>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<(usize, usize)> =
+            particles.into_iter()
+            .filter(|&(k, p)| k < self.n && p < self.outs[k].dim())
+            .collect();
+        if particles.is_empty() { return Vec::new(); }
+        particles.sort_by_key(|(k, _)| *k);
+        particles.dedup_by_key(|(k, _)| *k);
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<A::Re> = Vec::with_capacity(particles.len());
+        for (k, p) in particles.into_iter() {
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            let prob = self.local_prob(k, p);
+            let renorm = A::from_re(Float::sqrt(prob));
+            self.project(k, p, renorm);
+            mb_last = Some(k);
+            res.push(prob);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
+    }
 }
 
 impl<T, A> MPS<T, A>
@@ -1938,60 +2041,28 @@ impl MPS<Q, C64> {
     /// Perform the action of a gate.
     ///
     /// Does nothing if any qubit indices are out of bounds.
-    pub fn apply_gate(&mut self, gate: Gate) -> &mut Self {
-        match gate {
-            Gate::U(k, alpha, beta, gamma) if k < self.n => {
-                self.apply_unitary1(k, &gate::make_u(alpha, beta, gamma))
-                    .unwrap();
-            },
-            Gate::H(k) if k < self.n => {
-                self.apply_unitary1(k, Lazy::force(&gate::HMAT))
-                    .unwrap();
-            },
-            Gate::X(k) if k < self.n => {
-                self.apply_unitary1(k, Lazy::force(&gate::XMAT))
-                    .unwrap();
-            },
-            Gate::Z(k) if k < self.n => {
-                self.apply_unitary1(k, Lazy::force(&gate::ZMAT))
-                    .unwrap();
-            },
-            Gate::S(k) if k < self.n => {
-                self.apply_unitary1(k, Lazy::force(&gate::SMAT))
-                    .unwrap();
-            },
-            Gate::SInv(k) if k < self.n => {
-                self.apply_unitary1(k, Lazy::force(&gate::SINVMAT))
-                    .unwrap();
-            },
-            Gate::XRot(k, alpha) if k < self.n => {
-                self.apply_unitary1(k, &gate::make_xrot(alpha))
-                    .unwrap();
-            },
-            Gate::ZRot(k, alpha) if k < self.n => {
-                self.apply_unitary1(k, &gate::make_zrot(alpha))
-                    .unwrap();
-            },
-            Gate::CX(k) if k < self.n - 1 => {
-                self.apply_unitary2(k, Lazy::force(&gate::CXMAT))
-                    .unwrap();
-            },
-            Gate::CXRev(k) if k < self.n - 1 => {
-                self.apply_unitary2(k, Lazy::force(&gate::CXREVMAT))
-                    .unwrap();
-            },
-            Gate::CZ(k) if k < self.n - 1 => {
-                self.apply_unitary2(k, Lazy::force(&gate::CZMAT))
-                    .unwrap();
-            },
-            Gate::Haar2(k) if k < self.n - 1 => {
-                // TODO: figure out a way to avoid having to call thread_rng
-                // here; it's slow
-                let mut rng = rand::thread_rng();
-                self.apply_unitary2(k, &gate::haar(2, &mut rng))
-                    .unwrap();
-            },
-            _ => { },
+    pub fn apply_gate(&mut self, gate: &Gate) -> &mut Self {
+        if gate.is_q1() {
+            let (k, mat) = (*gate).into_matrix();
+            self.apply_unitary1(k, &mat).unwrap();
+        } else if gate.is_q2() {
+            let (k, mat) = (*gate).into_matrix();
+            self.apply_unitary2(k, &mat).unwrap();
+        }
+        self
+    }
+
+    /// Like [`apply_gate`][Self::apply_gate], but taking a cached random
+    /// generator.
+    pub fn apply_gate_rng<R>(&mut self, gate: &Gate, rng: &mut R) -> &mut Self
+    where R: Rng + ?Sized
+    {
+        if gate.is_q1() {
+            let (k, mat) = (*gate).into_matrix_rng(rng);
+            self.apply_unitary1(k, &mat).unwrap();
+        } else if gate.is_q2() {
+            let (k, mat) = (*gate).into_matrix_rng(rng);
+            self.apply_unitary2(k, &mat).unwrap();
         }
         self
     }
@@ -2000,8 +2071,206 @@ impl MPS<Q, C64> {
     pub fn apply_circuit<'a, I>(&mut self, gates: I) -> &mut Self
     where I: IntoIterator<Item = &'a Gate>
     {
-        gates.into_iter().copied().for_each(|g| { self.apply_gate(g); });
+        gates.into_iter().for_each(|g| { self.apply_gate(g); });
         self
+    }
+
+    /// Like [`apply_circuit`][Self::apply_circuit], but taking a cached random
+    /// generator.
+    pub fn apply_circuit_rng<'a, I, R>(&mut self, gates: I, rng: &mut R)
+        -> &mut Self
+    where
+        I: IntoIterator<Item = &'a Gate>,
+        R: Rng + ?Sized
+    {
+        gates.into_iter().for_each(|g| { self.apply_gate_rng(g, rng); });
+        self
+    }
+
+    /// Apply a unitary in place.
+    ///
+    /// Does nothing if any qubit indices are out of bounds.
+    pub fn apply_uni(&mut self, uni: &Uni) -> MPSResult<&mut Self> {
+        match uni {
+            Uni::Gate(g) => Ok(self.apply_gate(g)),
+            Uni::Mat(k, mat) => {
+                if mat.shape() == [2, 2] {
+                    self.apply_unitary1(*k, mat)
+                } else if mat.shape() == [4, 4] {
+                    self.apply_unitary2(*k, mat)
+                } else {
+                    Err(OperatorIncompatibleShape)
+                }
+            },
+        }
+    }
+
+    /// Like [`apply_uni`][Self::apply_uni], but taking a cached random
+    /// generator.
+    pub fn apply_uni_rng<R>(&mut self, uni: &Uni, rng: &mut R)
+        -> MPSResult<&mut Self>
+    where R: Rng + ?Sized
+    {
+        match uni {
+            Uni::Gate(g) => Ok(self.apply_gate_rng(g, rng)),
+            Uni::Mat(k, mat) => {
+                if mat.shape() == [2, 2] {
+                    self.apply_unitary1(*k, mat)
+                } else if mat.shape() == [4, 4] {
+                    self.apply_unitary2(*k, mat)
+                } else {
+                    Err(OperatorIncompatibleShape)
+                }
+            },
+        }
+    }
+
+    /// Apply a measurement in place.
+    ///
+    /// Does nothing if any qubit indices are out of bounds.
+    pub fn apply_meas<R>(&mut self, meas: &Meas, rng: &mut R) -> Option<Outcome>
+    where R: Rng + ?Sized
+    {
+        self.apply_meas_prob(meas, rng).map(|(out, _)| out)
+    }
+
+    /// Like [`apply_meas`][Self::apply_meas], but also returning the
+    /// probability of the outcome.
+    pub fn apply_meas_prob<R>(&mut self, meas: &Meas, rng: &mut R)
+        -> Option<(Outcome, f64)>
+    where R: Rng + ?Sized
+    {
+        match meas {
+            Meas::Rand(k) =>
+                self.measure_prob(*k, rng)
+                .map(|(p, prob)| (p.into(), prob)),
+            Meas::Proj(k, p) =>
+                self.measure_postsel_prob(*k, *p as usize)
+                .map(|prob| (*p, prob)),
+        }
+    }
+
+    /// Apply a batched series of measurements in place.
+    ///
+    /// Results are only returned from unique targets. Does nothing for any
+    /// measurements targeting out-of-bounds qubit indices.
+    pub fn apply_meas_layer<'a, I, R>(&mut self, meas: I, rng: &mut R)
+        -> Vec<(usize, Outcome)>
+    where
+        I: IntoIterator<Item = &'a Meas>,
+        R: Rng + ?Sized,
+    {
+        let mut meas: Vec<Meas> =
+            meas.into_iter()
+            .filter(|m| m.idx() < self.n)
+            .copied()
+            .collect();
+        if meas.is_empty() { return Vec::new(); }
+        meas.sort_by_key(|m| m.idx());
+        meas.dedup_by_key(|m| m.idx());
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<(usize, Outcome)> = Vec::with_capacity(meas.len());
+        for m in meas.into_iter() {
+            let k = m.idx();
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            match m {
+                Meas::Rand(_) => {
+                    let (p, prob) = self.sample_state(k, rng);
+                    let renorm = C64::from(prob.sqrt());
+                    self.project(k, p, renorm);
+                    res.push((k, p.into()));
+                },
+                Meas::Proj(_, out) => {
+                    let p = out as usize;
+                    let prob = self.local_prob(k, p);
+                    let renorm = C64::from(prob.sqrt());
+                    self.project(k, p, renorm);
+                    res.push((k, out));
+                },
+            }
+            mb_last = Some(k);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
+    }
+
+    /// Like [`apply_meas_layer`][Self::apply_meas_layer], but returning the
+    /// probability of each outcome after projecting.
+    pub fn apply_meas_prob_layer<'a, I, R>(&mut self, meas: I, rng: &mut R)
+        -> Vec<(usize, Outcome, f64)>
+    where
+        I: IntoIterator<Item = &'a Meas>,
+        R: Rng + ?Sized,
+    {
+        let mut meas: Vec<Meas> =
+            meas.into_iter()
+            .filter(|m| m.idx() < self.n)
+            .copied()
+            .collect();
+        if meas.is_empty() { return Vec::new(); }
+        meas.sort_by_key(|m| m.idx());
+        meas.dedup_by_key(|m| m.idx());
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<(usize, Outcome, f64)> =
+            Vec::with_capacity(meas.len());
+        for m in meas.into_iter() {
+            let k = m.idx();
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            match m {
+                Meas::Rand(_) => {
+                    let (p, prob) = self.sample_state(k, rng);
+                    let renorm = C64::from(prob.sqrt());
+                    self.project(k, p, renorm);
+                    res.push((k, p.into(), prob));
+                },
+                Meas::Proj(_, out) => {
+                    let p = out as usize;
+                    let prob = self.local_prob(k, p as usize);
+                    let renorm = C64::from(prob.sqrt());
+                    self.project(k, p as usize, renorm);
+                    res.push((k, out, prob));
+                },
+            }
+            mb_last = Some(k);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
+    }
+
+    /// Apply a general [`Op`] in place, returning the outcomes from any valid
+    /// measurements, or errors from any invalid unitaries.
+    pub fn apply_op<R>(&mut self, op: &Op, rng: &mut R)
+        -> MPSResult<Option<Outcome>>
+    where R: Rng + ?Sized
+    {
+        self.apply_op_prob(op, rng)
+            .map(|maybe_meas_out| maybe_meas_out.map(|(p, _)| p))
+    }
+
+    /// Like [`apply_op`][Self::apply_op], but also returning the probability of
+    /// any measurements.
+    pub fn apply_op_prob<R>(&mut self, op: &Op, rng: &mut R)
+        -> MPSResult<Option<(Outcome, f64)>>
+    where R: Rng + ?Sized
+    {
+        match op {
+            Op::Uni(uni) => self.apply_uni(uni).map(|_| None),
+            Op::Meas(meas) => Ok(self.apply_meas_prob(meas, rng)),
+        }
     }
 
     /// Like [`Self::measure`], but deterministically reset the state to ∣0⟩;
