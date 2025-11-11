@@ -11,7 +11,7 @@ use rand::Rng;
 use serde::{ Serialize, Deserialize };
 use thiserror::Error;
 use crate::{
-    gate::{ Clifford, Gate },
+    gate::{ /* Clifford, */ Gate },
     mps::{ MPS, MPSError },
     tensor::Idx,
 };
@@ -26,18 +26,19 @@ pub enum CircuitError {
     /// Returned when attempting to serialize a piece of data not supported by
     /// the [`postcard`] format.
     #[error("serialization error: encountered unsupported data")]
-    SerError,
+    SerError(serde_cbor::Error),
 
     /// Returned when either attempting to deserialize malformed binary data
     /// (i.e. not in the [`postcard`] format) or attempting to to deserialize to
     /// the wrong data type.
     #[error("deserialization error: malformed input")]
-    DeserError,
+    DeserError(serde_cbor::Error),
 
     /// General input/output error.
     #[error("IO error: {0}")]
     IOError(std::io::Error),
 }
+use CircuitError::*;
 pub type CircuitResult<T> = Result<T, CircuitError>;
 
 /// [Index type][Idx] for qubits.
@@ -493,112 +494,51 @@ impl From<(Outcome, usize)> for Op {
     fn from(proj: (Outcome, usize)) -> Self { Self::Meas(proj.into()) }
 }
 
-/// A collection of elements in a circuit.
+/// Write the contents of an object to a file using [`serde_cbor`].
 ///
-/// This is really just a [`Vec<T>`], but wrapped in a newtype for serialization
-/// and interface design purposes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Elements<T>(pub Vec<T>);
-
-impl<T> AsRef<Vec<T>> for Elements<T> {
-    fn as_ref(&self) -> &Vec<T> { &self.0 }
-}
-
-impl<T> AsMut<Vec<T>> for Elements<T> {
-    fn as_mut(&mut self) -> &mut Vec<T> { &mut self.0 }
-}
-
-impl<T> AsRef<[T]> for Elements<T> {
-    fn as_ref(&self) -> &[T] { self.0.as_ref() }
-}
-
-impl<T> AsMut<[T]> for Elements<T> {
-    fn as_mut(&mut self) -> &mut [T] { self.0.as_mut() }
-}
-
-impl<T> Elements<T>
-where T: Serialize
+/// Existing files are silently overwritten.
+pub fn save_cbor<T, P>(obj: &T, path: P) -> CircuitResult<()>
+where
+    T: Serialize,
+    P: AsRef<Path>,
 {
-    /// Write the contents of `self` to a file.
-    ///
-    /// Contents are serialized using the [`postcard`] format. Existing files
-    /// are silently overwritten.
-    pub fn save<P>(&self, path: P) -> CircuitResult<()>
-    where P: AsRef<Path>
-    {
-        let bytes: Vec<u8> =
-            postcard::to_stdvec(self)
-            .map_err(|_| CircuitError::SerError)?;
-        let mut outfile =
-            std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
-            .map_err(CircuitError::IOError)?;
-        outfile.write_all(&bytes)
-            .map_err(CircuitError::IOError)?;
-        Ok(())
-    }
+    let bytes: Vec<u8> =
+        serde_cbor::to_vec(obj)
+        .map_err(SerError)?;
+    let mut outfile =
+        std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(IOError)?;
+    outfile.write_all(&bytes)
+        .map_err(IOError)?;
+    Ok(())
 }
 
-impl<T> Elements<T>
-where for<'de> T: Deserialize<'de>
+/// Load data from a file using [`serde_cbor`].
+pub fn load_cbor<T, P>(path: P) -> CircuitResult<T>
+where
+    for<'de> T: Deserialize<'de>,
+    P: AsRef<Path>,
 {
-    /// Load a sequence of layers from a file.
-    ///
-    /// Contents are expected in the [`postcard`] format.
-    pub fn load<P>(path: P) -> CircuitResult<Self>
-    where P: AsRef<Path>
-    {
-        let mut buf: Vec<u8> = Vec::new();
-        let mut infile =
-            std::fs::OpenOptions::new()
-            .read(true)
-            .open(path)
-            .map_err(CircuitError::IOError)?;
-        infile.read_to_end(&mut buf)
-            .map_err(CircuitError::IOError)?;
-        let data =
-            postcard::from_bytes(&buf)
-            .map_err(|_| CircuitError::DeserError)?;
-        Ok(data)
-    }
-}
-
-impl<T, U> FromIterator<U> for Elements<T>
-where U: Into<T>
-{
-    fn from_iter<I>(iter: I) -> Self
-    where I: IntoIterator<Item = U>
-    {
-        Self(iter.into_iter().map(|x| x.into()).collect())
-    }
-}
-
-impl<'a, T> IntoIterator for &'a Elements<T> {
-    type Item = &'a T;
-    type IntoIter = <&'a Vec<T> as IntoIterator>::IntoIter;
-
-    fn into_iter(self) -> Self::IntoIter { self.0.iter() }
-}
-
-impl<'a, T> IntoIterator for &'a mut Elements<T> {
-    type Item = &'a mut T;
-    type IntoIter = <&'a mut Vec<T> as IntoIterator>::IntoIter;
-
-    fn into_iter(self) -> Self::IntoIter { self.0.iter_mut() }
-}
-
-impl<T> IntoIterator for Elements<T> {
-    type Item = T;
-    type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
-
-    fn into_iter(self) -> Self::IntoIter { self.0.into_iter() }
+    let mut buf: Vec<u8> = Vec::new();
+    let mut infile =
+        std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(IOError)?;
+    infile.read_to_end(&mut buf)
+        .map_err(IOError)?;
+    let data =
+        serde_cbor::from_slice(&buf)
+        .map_err(DeserError)?;
+    Ok(data)
 }
 
 /// A single layer of unitaries.
-pub type UniSeq = Elements<Uni>;
+pub type UniSeq = Vec<Uni>;
 
 /// Iterator type for qubit indices under a two-qubit gate tiling.
 pub struct TileQ2(std::iter::StepBy<std::ops::Range<usize>>);
@@ -628,39 +568,15 @@ impl std::iter::FusedIterator for TileQ2 { }
 
 /// Generate a layer of elements from a function applied to iteration over every
 /// other qubit index, optionally offset by 1.
-pub fn stagger_layer<F, T>(nqubits: usize, offs: bool, f: F) -> Elements<T>
+pub fn stagger_layer<F, T>(nqubits: usize, offs: bool, f: F) -> Vec<T>
 where F: FnMut(usize) -> T
 {
     TileQ2::new(nqubits, offs).map(f).collect()
 }
 
-/// Generate a brickwork layer of two-qubit Clifford *matrices*, optionally
-/// offset by 1.
-pub fn brickwork_cliff<R>(nqubits: usize, offs: bool, rng: &mut R) -> UniSeq
-where R: Rng + ?Sized
-{
-    stagger_layer(
-        nqubits, offs, |k| Gate::Cliff2(k).into_matrix_rng(rng).into())
-}
-
-/// Generate a brickwork layer of two-qubit Clifford *[`Gate`] sequences*,
-/// optionally offset by 1.
-pub fn brickwork_cliff_gates<R>(nqubits: usize, offs: bool, rng: &mut R)
-    -> UniSeq
-where R: Rng + ?Sized
-{
-    TileQ2::new(nqubits, offs)
-        .flat_map(|k| {
-            Clifford::gen(2, rng)
-            .into_iter()
-            .map(move |cliffgate| Gate::from_cliff2(cliffgate).map_idx(|_| k))
-        })
-        .collect()
-}
-
 /// Generate a brickwork layer of Haar-random two-qubit *matrices*, optionally
-/// offset by 1.
-pub fn brickwork_haar<R>(nqubits: usize, offs: bool, rng: &mut R) -> UniSeq
+/// offset by 1 qubit position on the left.
+pub fn haar_layer<R>(nqubits: usize, offs: bool, rng: &mut R) -> UniSeq
 where R: Rng + ?Sized
 {
     stagger_layer(
@@ -668,15 +584,16 @@ where R: Rng + ?Sized
 }
 
 /// A single layer of measurements.
-pub type MeasSeq = Elements<Meas>;
+pub type MeasSeq = Vec<Meas>;
 
 /// Generate a layer of elements from a function applied to each qubit index,
-/// where an operation `T` may or may not be applied to a particular qubit. Each
-/// qubit is visited exactly once.
-pub fn option_layer<F, T>(nqubits: usize, f: F) -> Elements<T>
+/// where an operation `T` may or may not be applied to a particular qubit.
+///
+/// Each qubit is visited exactly once.
+pub fn option_layer<F, T>(nqubits: usize, f: F) -> Vec<T>
 where F: FnMut(usize) -> Option<T>
 {
-    (0..nqubits).flat_map(f).collect()
+    (0 .. nqubits).filter_map(f).collect()
 }
 
 /// Generate a layer of measurements, each independently applied to a single
@@ -688,7 +605,7 @@ where R: Rng + ?Sized
 }
 
 /// A collection of general operations.
-pub type OpSeq = Elements<Op>;
+pub type OpSeq = Vec<Op>;
 
 /// A combination of a [`UniSeq`] and a [`MeasSeq`], with unitaries held
 /// separate from measurements.
@@ -711,13 +628,13 @@ impl From<(MeasSeq, UniSeq)> for BiLayer {
 }
 
 /// A circuit formed as a sequence of distinct layers.
-pub type LayerCircuit<T> = Elements<Elements<T>>;
+pub type LayerCircuit<T> = Vec<Vec<T>>;
 
 /// A circuit formed from distinct layers of unitaries.
 pub type UniCircuit = LayerCircuit<Uni>;
 
 /// A circuit formed from distinct unitary + measurement layers.
-pub type BiLayerCircuit = Elements<BiLayer>;
+pub type BiLayerCircuit = Vec<BiLayer>;
 
 /// Apply a single pair of unitary and measurement layers to a [`MPS`], with the
 /// unitary layer applied first.
@@ -739,29 +656,25 @@ where
     R: Rng + ?Sized
 {
     for uni in unis.into_iter() { state.apply_uni_rng(uni, rng)?; }
-    let meas_iter =
-        meas.into_iter()
-        .filter_map(|m| state.apply_meas_prob(m, rng).map(|o| (m.idx(), o)));
+    let meas_probs = state.apply_meas_prob_layer(meas, rng);
     match (outcomes, probs) {
         (Some(out_buf), Some(prob_buf)) => {
-            meas_iter.for_each(|(k, (out, prob))| {
+            for (k, out, prob) in meas_probs.into_iter() {
                 out_buf.push(Meas::Proj(k, out));
                 prob_buf.push((k, prob));
-            });
+            }
         },
         (Some(out_buf), None) => {
-            meas_iter.for_each(|(k, (out, _prob))| {
+            for (k, out, _prob) in meas_probs.into_iter() {
                 out_buf.push(Meas::Proj(k, out));
-            });
+            }
         },
         (None, Some(prob_buf)) => {
-            meas_iter.for_each(|(k, (_out, prob))| {
+            for (k, _out, prob) in meas_probs.into_iter() {
                 prob_buf.push((k, prob));
-            });
+            }
         },
-        (None, None) => {
-            meas_iter.for_each(|_| ());
-        },
+        (None, None) => { },
     }
     Ok(())
 }

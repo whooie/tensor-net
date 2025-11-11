@@ -1890,7 +1890,7 @@ where
     }
 
     /// Like [`measure`][Self::measure_postsel], but returning the probability
-    /// of the outcome alongside the outcome itself.
+    /// of the outcome after projecting.
     pub fn measure_postsel_prob(&mut self, k: usize, p: usize) -> Option<A::Re>
     {
         if k >= self.n || p >= self.idxs[k].dim() { return None; }
@@ -1898,6 +1898,151 @@ where
         self.project_state(k, p, prob.sqrt());
         self.refactor_sweep();
         Some(prob)
+    }
+
+    /// Perform a batched series of projective measurements on selected
+    /// particles, reporting the index values of each (randomized) outcome
+    /// states for those particles. Projections are performed and outcomes
+    /// reported in increasing particle index order.
+    ///
+    /// If any particle index is out of bounds, no projection is performed and
+    /// its outcome is omitted. Duplicate indices are ignored.
+    pub fn measure_layer<I, R>(&mut self, particles: I, rng: &mut R)
+        -> Vec<usize>
+    where
+        I: IntoIterator<Item = usize>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<usize> =
+            particles.into_iter().filter(|k| *k < self.n).collect();
+        if particles.is_empty() { return particles; }
+        particles.sort_unstable();
+        particles.dedup();
+
+        let mut mb_last: Option<usize> = None;
+        for k in particles.iter_mut() {
+            if let Some(last) = mb_last {
+                (last .. *k).for_each(|j| { self.local_refactor(j); });
+            }
+            let (p, prob) = self.sample_state(*k, rng);
+            let renorm = prob.sqrt();
+            self.project_state(*k, p, renorm);
+            mb_last = Some(*k);
+            *k = p;
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        particles
+    }
+
+    /// Like [`measure_layer`][Self::measure_layer], but returning the
+    /// probabilities of each outcome alongside the outcomes themselves.
+    pub fn measure_prob_layer<I, R>(&mut self, particles: I, rng: &mut R)
+        -> Vec<(usize, A::Re)>
+    where
+        I: IntoIterator<Item = usize>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<usize> =
+            particles.into_iter().filter(|k| *k < self.n).collect();
+        if particles.is_empty() { return Vec::new(); }
+        particles.sort_unstable();
+        particles.dedup();
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<(usize, A::Re)> = Vec::with_capacity(particles.len());
+        for k in particles.into_iter() {
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            let (p, prob) = self.sample_state(k, rng);
+            let renorm = prob.sqrt();
+            self.project_state(k, p, renorm);
+            mb_last = Some(k);
+            res.push((p, prob));
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
+    }
+
+    /// Perform a batched series of projective measurements on selected
+    /// particles, post-selected to particular outcomes. Projections are
+    /// performed in increasing particle index order.
+    ///
+    /// If any particle index is out of bounds, no projection is performed.
+    /// Duplicate indices and invalid quantum numbers are ignored. Projections
+    /// are expected in `(particle index, particle state)` form.
+    pub fn measure_postsel_layer<I, R>(&mut self, particles: I)
+    where
+        I: IntoIterator<Item = (usize, usize)>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<(usize, usize)> =
+            particles.into_iter()
+            .filter(|&(k, p)| k < self.n && p < self.idxs[k].dim())
+            .collect();
+        if particles.is_empty() { return; }
+        particles.sort_by_key(|(k, _)| *k);
+        particles.dedup_by_key(|(k, _)| *k);
+
+        let mut mb_last: Option<usize> = None;
+        for (k, p) in particles.into_iter() {
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            let prob = self.local_prob(k, p);
+            let renorm = prob.sqrt();
+            self.project_state(k, p, renorm);
+            mb_last = Some(k);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+    }
+
+    /// Like [`measure_postsel_layer`][Self::measure_postsel_layer], but
+    /// returning the probability of each outcome after projecting.
+    pub fn measure_postsel_prob_layer<I, R>(&mut self, particles: I)
+        -> Vec<A::Re>
+    where
+        I: IntoIterator<Item = (usize, usize)>,
+        R: Rng + ?Sized,
+    {
+        let mut particles: Vec<(usize, usize)> =
+            particles.into_iter()
+            .filter(|&(k, p)| k < self.n && p < self.idxs[k].dim())
+            .collect();
+        if particles.is_empty() { return Vec::new(); }
+        particles.sort_by_key(|(k, _)| *k);
+        particles.dedup_by_key(|(k, _)| *k);
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<A::Re> = Vec::with_capacity(particles.len());
+        for (k, p) in particles.into_iter() {
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            let prob = self.local_prob(k, p);
+            let renorm = prob.sqrt();
+            self.project_state(k, p, renorm);
+            mb_last = Some(k);
+            res.push(prob);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
     }
 }
 
@@ -2066,6 +2211,107 @@ impl MPS<Q, C64> {
                 self.measure_postsel_prob(*k, *p as usize)
                 .map(|prob| (*p, prob)),
         }
+    }
+
+    /// Apply a batched series of measurements in place.
+    ///
+    /// Results are only returned from unique targets. Does nothing for any
+    /// measurements targeting out-of-bounds qubit indices.
+    pub fn apply_meas_layer<'a, I, R>(&mut self, meas: I, rng: &mut R)
+        -> Vec<(usize, Outcome)>
+    where
+        I: IntoIterator<Item = &'a Meas>,
+        R: Rng + ?Sized,
+    {
+        let mut meas: Vec<Meas> =
+            meas.into_iter()
+            .filter(|m| m.idx() < self.n)
+            .copied()
+            .collect();
+        if meas.is_empty() { return Vec::new(); }
+        meas.sort_by_key(|m| m.idx());
+        meas.dedup_by_key(|m| m.idx());
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<(usize, Outcome)> = Vec::with_capacity(meas.len());
+        for m in meas.into_iter() {
+            let k = m.idx();
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            match m {
+                Meas::Rand(_) => {
+                    let (p, prob) = self.sample_state(k, rng);
+                    let renorm = prob.sqrt();
+                    self.project_state(k, p, renorm);
+                    res.push((k, p.into()));
+                },
+                Meas::Proj(_, out) => {
+                    let p = out as usize;
+                    let prob = self.local_prob(k, p);
+                    let renorm = prob.sqrt();
+                    self.project_state(k, p, renorm);
+                    res.push((k, out));
+                },
+            }
+            mb_last = Some(k);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
+    }
+
+    /// Like [`apply_meas_layer`][Self::apply_meas_layer], but returning the
+    /// probability of each outcome after projecting.
+    pub fn apply_meas_prob_layer<'a, I, R>(&mut self, meas: I, rng: &mut R)
+        -> Vec<(usize, Outcome, f64)>
+    where
+        I: IntoIterator<Item = &'a Meas>,
+        R: Rng + ?Sized,
+    {
+        let mut meas: Vec<Meas> =
+            meas.into_iter()
+            .filter(|m| m.idx() < self.n)
+            .copied()
+            .collect();
+        if meas.is_empty() { return Vec::new(); }
+        meas.sort_by_key(|m| m.idx());
+        meas.dedup_by_key(|m| m.idx());
+
+        let mut mb_last: Option<usize> = None;
+        let mut res: Vec<(usize, Outcome, f64)> =
+            Vec::with_capacity(meas.len());
+        for m in meas.into_iter() {
+            let k = m.idx();
+            if let Some(last) = mb_last {
+                (last .. k).for_each(|j| { self.local_refactor(j); });
+            }
+            match m {
+                Meas::Rand(_) => {
+                    let (p, prob) = self.sample_state(k, rng);
+                    let renorm = prob.sqrt();
+                    self.project_state(k, p, renorm);
+                    res.push((k, p.into(), prob));
+                },
+                Meas::Proj(_, out) => {
+                    let p = out as usize;
+                    let prob = self.local_prob(k, p);
+                    let renorm = prob.sqrt();
+                    self.project_state(k, p, renorm);
+                    res.push((k, out, prob));
+                },
+            }
+            mb_last = Some(k);
+        }
+        if let Some(last) = mb_last {
+            (last .. self.n - 1)
+                .for_each(|j| { self.local_refactor(j); });
+        }
+        for k in (0 .. self.n - 2).rev() { self.local_refactor(k); }
+        res
     }
 
     /// Apply a general [`Op`] in place, returning the outcomes from any valid

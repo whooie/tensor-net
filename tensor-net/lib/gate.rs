@@ -468,6 +468,7 @@ impl Gate {
         self
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_cliff2(cliff: CliffGate) -> Self {
         match cliff {
             CliffGate::H(k) => Self::H(k),
