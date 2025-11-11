@@ -239,8 +239,8 @@ fn main() {
             "p" => &nd::array![p],
             "circ" => &nd::array![circ as i32],
             "chi" =>
-                BONDS.iter()
-                .map(|maybe_chi| maybe_chi.copied().unwrap_or(0) as i32)
+                &BONDS.iter()
+                .map(|maybe_chi| (*maybe_chi).unwrap_or(0) as i32)
                 .collect::<nd::Array1<i32>>(),
             "meas_locs" => &meas_locs,
             "traj_data" => &traj_data,
