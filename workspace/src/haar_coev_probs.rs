@@ -15,9 +15,9 @@ use lib::haar::MiptManifest;
 const RUNS: usize = 64;
 const BONDS: &[Option<usize>] =
     &[
-        Some(4),  Some(8),  Some(12), Some(16), Some(20),
-        Some(24), Some(28), Some(32), Some(36), Some(40),
-        Some(44), Some(48), Some(56), Some(64), Some(72),
+        Some(4),  Some(8),  Some(12), Some(16), Some(20), Some(24),
+        Some(28), Some(32), Some(36), Some(40), Some(44), Some(48),
+        Some(56), Some(64), Some(72), Some(80), Some(88), Some(96),
         None,
     ];
 
@@ -224,7 +224,8 @@ fn main() {
         outdir.join(fname),
         arrays: {
             "manifest_file" =>
-                &manifest_file.to_str().unwrap().chars()
+                &manifest_file.to_str().unwrap()
+                .chars()
                 .map(|c| c as i32)
                 .collect::<nd::Array1<i32>>(),
             "seed" => &nd::array![manifest.seed()],
@@ -237,6 +238,10 @@ fn main() {
                 .collect::<nd::Array1<i32>>(),
             "p" => &nd::array![p],
             "circ" => &nd::array![circ as i32],
+            "chi" =>
+                BONDS.iter()
+                .map(|maybe_chi| maybe_chi.copied().unwrap_or(0) as i32)
+                .collect::<nd::Array1<i32>>(),
             "meas_locs" => &meas_locs,
             "traj_data" => &traj_data,
             "prob_data" => &prob_data,
