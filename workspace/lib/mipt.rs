@@ -2,16 +2,25 @@ use std::{
     hash::{ Hash, Hasher },
     path::{ Path, PathBuf },
 };
+use nalgebra as na;
+use ndarray::{ self as nd, ShapeBuilder };
+use ndarray_npy::NpzWriter;
+use num_complex::Complex64 as C64;
 use rand::{ Rng, SeedableRng, rngs::StdRng };
 use serde::{ Serialize, Deserialize };
-use tensor_net::circuit::{
-    Uni,
-    Meas,
-    haar_layer,
-    uniform_meas,
-    save_cbor,
-    load_cbor,
-    CircuitResult,
+use tensor_net::{
+    mps::{ MPS, Gamma },
+    circuit::{
+        Q,
+        Uni,
+        Meas,
+        haar_layer,
+        uniform_meas,
+        save_cbor,
+        load_cbor,
+        CircuitError,
+        CircuitResult,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -123,5 +132,48 @@ impl MiptManifest {
         let infile = indir.as_ref().join(fname);
         Self::load(infile)
     }
+}
+
+fn gamma_to_ndarray(gamma: &Gamma<C64>) -> nd::Array3<C64> {
+    let tens_shape = gamma.dims();
+    let mat = gamma.mat();
+    let mat_shape = mat.shape();
+    // nalgebra matrices are column-major, so we need to ensure `tens` is
+    // column-major as well for efficiency                      v
+    let mut tens: nd::Array2<C64> = nd::Array2::zeros(mat_shape.f());
+    tens.iter_mut().zip(mat.iter())
+        .for_each(|(to, from)| { *to = *from; });
+    tens.into_shape(tens_shape).unwrap()
+}
+
+fn lambda_to_ndarray(lambda: &na::DVector<f64>) -> nd::Array1<f64> {
+    lambda.iter().copied().collect()
+}
+
+pub fn save_mps<P>(mps: &MPS<Q, C64>, path: P) -> CircuitResult<()>
+where P: AsRef<Path>
+{
+    let outfile =
+        std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .append(false)
+        .open(path)
+        .map_err(CircuitError::IOError)?;
+    let mut writer = NpzWriter::new(outfile);
+    for (k, gammak) in mps.gamma().iter().enumerate() {
+        let gammak_tens = gamma_to_ndarray(gammak);
+        writer.add_array(format!("g{k}"), &gammak_tens)
+            .expect("npz writer error");
+    }
+    for (k, lambdak) in mps.svals().iter().enumerate() {
+        let lambdak_vec = lambda_to_ndarray(lambdak);
+        writer.add_array(format!("l{k}"), &lambdak_vec)
+            .expect("npz writer error");
+    }
+    writer.finish()
+        .expect("npz writer error");
+    Ok(())
 }
 

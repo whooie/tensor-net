@@ -1056,6 +1056,7 @@ dependencies = [
  "itertools 0.13.0",
  "nalgebra 0.33.2",
  "ndarray",
+ "ndarray-npy",
  "num-complex",
  "num-traits",
  "once_cell",

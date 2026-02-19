@@ -1274,6 +1274,18 @@ where A: ComplexScalar
     /// Return a reference to all physical indices.
     pub fn indices(&self) -> &Vec<T> { &self.idxs }
 
+    /// Return a reference to the inner vector of [`Gamma`] tensors.
+    ///
+    /// The returned vector is exactly `self.n()` elements long.
+    pub fn gamma(&self) -> &Vec<Gamma<A>> { &self.data }
+
+    /// Return a reference to the inner vector of singular values on each bond.
+    /// The `k`-th element of the vector corresponds to the bond between the
+    /// `k`-th and `k+1`-th particles.
+    ///
+    /// The returned vector is exactly `self.n() - 1` elements long.
+    pub fn svals(&self) -> &Vec<na::DVector<A::Re>> { &self.svals }
+
     /// Return the current bond dimension truncation setting.
     pub fn get_trunc(&self) -> Option<BondDim<A::Re>> { self.trunc }
 

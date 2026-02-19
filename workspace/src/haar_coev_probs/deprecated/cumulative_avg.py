@@ -138,6 +138,7 @@ def process_set(indir: Path, file_fmt: str) -> Processed:
         print(f"found cache file '{cache_file}'")
         processed = Processed.load(cache_file)
         return processed
+    print(indir)
     data_first = np.load(str(indir.joinpath(file_fmt.format(0))))
     num_circs = int(data_first["circs"][0])
     seed = int(data_first["seed"][0])
@@ -171,10 +172,14 @@ def main():
     # infile_fmt = "haar_coev_probs_n=10_d=100_runs=2000_seed=10546_circ={}.npz"
     # infile_fmt = "haar_coev_probs_n=12_d=120_runs=500_seed=10546_circ={}.npz"
     # infile_fmt = "haar_coev_probs_n=14_d=140_runs=500_seed=10546_circ={}.npz"
+
+    # infile_fmt = "haar_coev_probs_seed=10546_n=14_depth=140_circ={}_id=comb.npz"
     # infile_fmt = "haar_coev_probs_seed=10546_n=15_depth=150_circ={}_id=comb.npz"
     # infile_fmt = "haar_coev_probs_seed=10546_n=16_depth=160_circ={}_id=comb.npz"
-    # infile_fmt = "haar_coev_probs_seed=10546_n=8_depth=80_circ={}_id=test.npz"
-    infile_fmt = "haar_coev_probs_seed=10546_n=10_depth=100_circ={}_id=test.npz"
+    # infile_fmt = "haar_coev_probs_seed=10546_n=17_depth=170_circ={}_id=comb.npz"
+    # infile_fmt = "haar_coev_probs_seed=10546_n=18_depth=180_circ={}_id=comb.npz"
+    # infile_fmt = "haar_coev_probs_seed=10546_n=19_depth=190_circ={}_id=comb.npz"
+    infile_fmt = "haar_coev_probs_seed=10546_n=20_depth=200_circ={}_id=comb.npz"
 
     processed = process_set(outdir, infile_fmt)
     avg_slopes = processed.fits[:, :, :, 1].mean(axis=0)
@@ -376,13 +381,20 @@ def main():
         )
         .set_xlabel("$p$")
         .set_ylabel("Diff. from $\\chi = \\infty$")
-        .set_ylim(1e-7, 3e-2)
         .set_title(f"{size = }; {depth = }")
         .savefig(
             fname_adjust(
                 outdir.joinpath(infile_fmt.format("avg")),
                 lambda stem: stem + "_diff_lines_log",
                 "png",
+            )
+        )
+        .set_title(None)
+        .savefig(
+            fname_adjust(
+                outdir.joinpath(infile_fmt.format("avg")),
+                lambda stem: stem + "_diff_lines_log",
+                "pdf",
             )
         )
         .close()

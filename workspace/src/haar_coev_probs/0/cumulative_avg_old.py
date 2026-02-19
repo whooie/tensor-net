@@ -71,33 +71,7 @@ class Processed:
     chi: np.ndarray[int, 1]
     fits: np.ndarray[float, 4] # :: { circ, p_meas, chi, linfit_param }
 
-    def save(self, outfile: Path):
-        np.savez(
-            str(outfile),
-            seed=np.array([self.seed]),
-            size=np.array([self.size]),
-            depth=np.array([self.depth]),
-            d0=np.array([self.d0]),
-            p_meas=self.p_meas,
-            chi=self.chi,
-            fits=self.fits,
-        )
-
-    @staticmethod
-    def load(infile: Path) -> 'Processed':
-        data = np.load(str(infile))
-        seed = int(data["seed"][0])
-        size = int(data["size"][0])
-        depth = int(data["depth"][0])
-        d0 = int(data["d0"][0])
-        p_meas = data["p_meas"]
-        chi = data["chi"]
-        fits = data["fits"]
-        return Processed(seed, size, depth, d0, p_meas, chi, fits)
-
 def process_single(infile: Path, d0: int) -> Optional[np.ndarray[float, 3]]:
-    if not infile.exists():
-        return None
     print(infile)
     data = np.load(str(infile))
     size = int(data["size"][0])
@@ -133,11 +107,6 @@ def process_single(infile: Path, d0: int) -> Optional[np.ndarray[float, 3]]:
     return fits
 
 def process_set(indir: Path, file_fmt: str) -> Processed:
-    cache_file = indir.joinpath(file_fmt.format("processed"))
-    if cache_file.exists():
-        print(f"found cache file '{cache_file}'")
-        processed = Processed.load(cache_file)
-        return processed
     data_first = np.load(str(indir.joinpath(file_fmt.format(0))))
     num_circs = int(data_first["circs"][0])
     seed = int(data_first["seed"][0])
@@ -159,9 +128,7 @@ def process_set(indir: Path, file_fmt: str) -> Processed:
         if (f := process_single(indir.joinpath(file_fmt.format(c)), d0))
         is not None
     ])
-    processed = Processed(seed, size, depth, d0, p_meas, chi, fits)
-    processed.save(cache_file)
-    return processed
+    return Processed(seed, size, depth, d0, p_meas, chi, fits)
 
 def main():
     outdir = Path("output").joinpath("haar_coev_probs")
@@ -169,12 +136,7 @@ def main():
     # infile_fmt = "haar_coev_probs_n=6_d=60_runs=2000_seed=10546_circ={}.npz"
     # infile_fmt = "haar_coev_probs_n=8_d=80_runs=2000_seed=10546_circ={}.npz"
     # infile_fmt = "haar_coev_probs_n=10_d=100_runs=2000_seed=10546_circ={}.npz"
-    # infile_fmt = "haar_coev_probs_n=12_d=120_runs=500_seed=10546_circ={}.npz"
-    # infile_fmt = "haar_coev_probs_n=14_d=140_runs=500_seed=10546_circ={}.npz"
-    # infile_fmt = "haar_coev_probs_seed=10546_n=15_depth=150_circ={}_id=comb.npz"
-    # infile_fmt = "haar_coev_probs_seed=10546_n=16_depth=160_circ={}_id=comb.npz"
-    # infile_fmt = "haar_coev_probs_seed=10546_n=8_depth=80_circ={}_id=test.npz"
-    infile_fmt = "haar_coev_probs_seed=10546_n=10_depth=100_circ={}_id=test.npz"
+    infile_fmt = "haar_coev_probs_n=12_d=120_runs=500_seed=10546_circ={}.npz"
 
     processed = process_set(outdir, infile_fmt)
     avg_slopes = processed.fits[:, :, :, 1].mean(axis=0)
@@ -265,7 +227,7 @@ def main():
         P.semilogy(
             p_meas, slopes_x,
             marker=".", linestyle="-", color=f"C{k % 10}",
-            label=f"$\\chi = {x if x > 0 else '\\infty'}$",
+            label=f"$\\chi = {x}$",
         )
     (
         P
@@ -332,7 +294,7 @@ def main():
         P.plot(
             p_meas, slopes_diff_x,
             marker=".", linestyle="-", color=f"C{k % 10}",
-            label=f"$\\chi = {x if x > 0 else '\\infty'}$",
+            label=f"$\\chi = {x}$",
         )
     (
         P
@@ -362,7 +324,7 @@ def main():
         P.semilogy(
             p_meas, slopes_diff_x,
             marker=".", linestyle="-", color=f"C{k % 10}",
-            label=f"$\\chi = {x if x > 0 else '\\infty'}$",
+            label=f"$\\chi = {x}$",
         )
     (
         P
@@ -376,7 +338,6 @@ def main():
         )
         .set_xlabel("$p$")
         .set_ylabel("Diff. from $\\chi = \\infty$")
-        .set_ylim(1e-7, 3e-2)
         .set_title(f"{size = }; {depth = }")
         .savefig(
             fname_adjust(
