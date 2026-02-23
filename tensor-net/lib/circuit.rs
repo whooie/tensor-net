@@ -636,6 +636,49 @@ pub type UniCircuit = LayerCircuit<Uni>;
 /// A circuit formed from distinct unitary + measurement layers.
 pub type BiLayerCircuit = Vec<BiLayer>;
 
+// /// Apply a single pair of unitary and measurement layers to a [`MPS`], with the
+// /// unitary layer applied first.
+// ///
+// /// Measurement outcomes are optionally pushed onto an output buffer as all
+// /// [`Meas::Proj`], and outcome probabilities are likewise optionally pushed
+// /// onto a different output buffer along with the qubit index.
+// pub fn apply_bilayer<'a, U, M, R>(
+//     state: &mut MPS<Q, C64>,
+//     unis: U,
+//     meas: M,
+//     outcomes: Option<&mut Vec<Meas>>,
+//     probs: Option<&mut Vec<(usize, f64)>>,
+//     rng: &mut R,
+// ) -> CircuitResult<()>
+// where
+//     U: IntoIterator<Item = &'a Uni>,
+//     M: IntoIterator<Item = &'a Meas>,
+//     R: Rng + ?Sized
+// {
+//     for uni in unis.into_iter() { state.apply_uni_rng(uni, rng)?; }
+//     let meas_probs = state.apply_meas_prob_layer(meas, rng);
+//     match (outcomes, probs) {
+//         (Some(out_buf), Some(prob_buf)) => {
+//             for (k, out, prob) in meas_probs.into_iter() {
+//                 out_buf.push(Meas::Proj(k, out));
+//                 prob_buf.push((k, prob));
+//             }
+//         },
+//         (Some(out_buf), None) => {
+//             for (k, out, _prob) in meas_probs.into_iter() {
+//                 out_buf.push(Meas::Proj(k, out));
+//             }
+//         },
+//         (None, Some(prob_buf)) => {
+//             for (k, _out, prob) in meas_probs.into_iter() {
+//                 prob_buf.push((k, prob));
+//             }
+//         },
+//         (None, None) => { },
+//     }
+//     Ok(())
+// }
+
 /// Apply a single pair of unitary and measurement layers to a [`MPS`], with the
 /// unitary layer applied first.
 ///
@@ -656,25 +699,29 @@ where
     R: Rng + ?Sized
 {
     for uni in unis.into_iter() { state.apply_uni_rng(uni, rng)?; }
-    let meas_probs = state.apply_meas_prob_layer(meas, rng);
+    let meas_iter =
+        meas.into_iter()
+        .filter_map(|m| state.apply_meas_prob(m, rng).map(|o| (m.idx(), o)));
     match (outcomes, probs) {
         (Some(out_buf), Some(prob_buf)) => {
-            for (k, out, prob) in meas_probs.into_iter() {
+            meas_iter.for_each(|(k, (out, prob))| {
                 out_buf.push(Meas::Proj(k, out));
                 prob_buf.push((k, prob));
-            }
+            });
         },
         (Some(out_buf), None) => {
-            for (k, out, _prob) in meas_probs.into_iter() {
+            meas_iter.for_each(|(k, (out, _prob))| {
                 out_buf.push(Meas::Proj(k, out));
-            }
+            });
         },
         (None, Some(prob_buf)) => {
-            for (k, _out, prob) in meas_probs.into_iter() {
+            meas_iter.for_each(|(k, (_out, prob))| {
                 prob_buf.push((k, prob));
-            }
+            });
         },
-        (None, None) => { },
+        (None, None) => {
+            meas_iter.for_each(|_| ());
+        },
     }
     Ok(())
 }
