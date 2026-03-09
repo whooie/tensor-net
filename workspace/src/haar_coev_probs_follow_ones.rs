@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{ Path, PathBuf },
     sync::atomic::{ AtomicUsize, Ordering },
 };
 use itertools::Itertools;
@@ -11,10 +11,50 @@ use tensor_net::{
     mps::{ MPS, BondDim },
 };
 use whooie::{ read_npz, write_npz };
-use lib::mipt::MiptManifest;
+use lib::mipt::{ MiptManifest, save_mps };
 
 type MeasRecord = Vec<Vec<Meas>>; // :: { layer, subindex }
 type ProbRecord = Vec<Vec<(usize, f64)>>; // :: { layer, subindex }
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct SaveState<'a, P> {
+    outdir: P,
+    seed: u64,
+    nqubits: usize,
+    depth: usize,
+    circ: usize,
+    p: f64,
+    run: usize,
+    output_id: &'a str,
+}
+
+impl<'a, P> SaveState<'a, P>
+where P: AsRef<Path>
+{
+    fn target_path(&self, chi: usize) -> PathBuf {
+        let fname = format!("\
+            haar_coev_state_ones\
+            _seed={}\
+            _nqubits={}\
+            _depth={}\
+            _p={:.6}\
+            _circ={}\
+            _chi={}\
+            _run={}\
+            _outid={}\
+            .npz",
+            self.seed,
+            self.nqubits,
+            self.depth,
+            self.p,
+            self.circ,
+            chi,
+            self.run,
+            self.output_id,
+        );
+        self.outdir.as_ref().join(fname)
+    }
+}
 
 fn construct_meas_record<A, B>(
     depth: usize,
@@ -49,11 +89,13 @@ where
     record
 }
 
-fn compute_probs(
+fn compute_probs<'a, P>(
     nqubits: usize,
     bonds: &[usize],
-    circ: (&[UniSeq], &[MeasSeq])
+    circ: (&[UniSeq], &[MeasSeq]),
+    save_states: Option<SaveState<'a, P>>
 ) -> Vec<ProbRecord> // :: { chi, layer, subindex }
+where P: AsRef<Path>
 {
     assert_eq!(circ.0.len(), circ.1.len());
     // `apply_bilayer` requires an rng, but this function should be entirely
@@ -81,6 +123,10 @@ fn compute_probs(
             })
             .collect();
         probs.push(probs_c);
+        if let Some(save) = save_states.as_ref() {
+            save_mps(&state_c, save.target_path(chi))
+                .expect("error saving state");
+        }
     }
     probs
 }
@@ -100,6 +146,7 @@ fn main() {
         args.next()
         .expect("missing trajectory file");
     let traj_file = PathBuf::from(traj_file);
+    let save = args.next().is_some();
 
     let mut data = read_npz!(traj_file);
     let chi: nd::Array1<i32> = data.by_name("chi").unwrap();
@@ -147,10 +194,10 @@ fn main() {
     let mut prob_data: nd::Array3<f64> =
         nd::Array::zeros((runs, bonds.len(), num_meas));
 
-    let run = AtomicUsize::new(0);
-    nd::Zip::from(traj_data.outer_iter())
+    let completed = AtomicUsize::new(0);
+    nd::Zip::indexed(traj_data.outer_iter())
         .and(prob_data.outer_iter_mut())
-        .par_for_each(|traj_rec_r, mut prob_rec_r| {
+        .par_for_each(|run, traj_rec_r, mut prob_rec_r| {
             let meas_record = construct_meas_record(
                 depth[0] as usize,
                 &meas_locs,
@@ -160,6 +207,18 @@ fn main() {
                 nqubits[0] as usize,
                 &bonds,
                 (unis.as_ref(), meas_record.as_ref()),
+                save.then_some(
+                    SaveState {
+                        outdir: &outdir,
+                        seed: manifest.seed(),
+                        nqubits: manifest.nqubits(),
+                        depth: manifest.depth(),
+                        circ: circ[0] as usize,
+                        p: p[0],
+                        run,
+                        output_id: &output_id,
+                    }
+                ),
             );
 
             assert_eq!(prob_rec_r.shape()[0], probs.len());
@@ -177,7 +236,7 @@ fn main() {
                     });
                 });
 
-            let prev_run = run.fetch_add(1, Ordering::SeqCst);
+            let prev_run = completed.fetch_add(1, Ordering::SeqCst);
             eprintln!("  {:w_run$} / {:w_run$} ", prev_run + 1, runs);
         });
     eprintln!();

@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{ Path, PathBuf },
     sync::atomic::{ AtomicUsize, Ordering },
 };
 use ndarray as nd;
@@ -10,7 +10,7 @@ use tensor_net::{
     mps::{ MPS, BondDim },
 };
 use whooie::write_npz;
-use lib::mipt::MiptManifest;
+use lib::mipt::{ MiptManifest, save_mps };
 
 const RUNS: usize = 64;
 const BONDS: &[Option<usize>] =
@@ -30,10 +30,52 @@ struct Trajectory {
     probs: Vec<ProbRecord>,
 }
 
-fn sample_trajectory(
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct SaveState<'a, P> {
+    outdir: P,
+    seed: u64,
     nqubits: usize,
-    circ: (&[UniSeq], &[MeasSeq])
+    depth: usize,
+    circ: usize,
+    p: f64,
+    run: usize,
+    output_id: &'a str,
+}
+
+impl<'a, P> SaveState<'a, P>
+where P: AsRef<Path>
+{
+    fn target_path(&self, chi: usize) -> PathBuf {
+        let fname = format!("\
+            haar_coev_state\
+            _seed={}\
+            _nqubits={}\
+            _depth={}\
+            _p={:.6}\
+            _circ={}\
+            _chi={}\
+            _run={}\
+            _outid={}\
+            .npz",
+            self.seed,
+            self.nqubits,
+            self.depth,
+            self.p,
+            self.circ,
+            chi,
+            self.run,
+            self.output_id,
+        );
+        self.outdir.as_ref().join(fname)
+    }
+}
+
+fn sample_trajectory<'a, P>(
+    nqubits: usize,
+    circ: (&[UniSeq], &[MeasSeq]),
+    save_states: Option<SaveState<'a, P>>,
 ) -> Trajectory
+where P: AsRef<Path>
 {
     assert_eq!(circ.0.len(), circ.1.len());
     let mut rng = thread_rng();
@@ -55,6 +97,10 @@ fn sample_trajectory(
             (outcome_buf, prob_buf)
         })
         .unzip();
+    if let Some(save) = save_states.as_ref() {
+        save_mps(&state_q, save.target_path(0))
+            .expect("error saving state");
+    }
 
     let mut probs: Vec<ProbRecord> = Vec::with_capacity(BONDS.len());
     for chi in BONDS.iter().copied().flatten() {
@@ -76,6 +122,10 @@ fn sample_trajectory(
             })
             .collect();
         probs.push(probs_c);
+        if let Some(save) = save_states.as_ref() {
+            save_mps(&state_c, save.target_path(chi))
+                .expect("error saving state");
+        }
     }
     probs.push(probs_q);
 
@@ -111,6 +161,7 @@ fn main() {
         .expect("missing p value")
         .parse::<f64>()
         .expect("invalid p value");
+    let save = args.next().is_some();
 
     let manifest =
         MiptManifest::load(&manifest_file)
@@ -158,14 +209,26 @@ fn main() {
     let mut prob_data: nd::Array3<f64> =
         nd::Array::zeros((RUNS, BONDS.len(), num_meas));
 
-    let run = AtomicUsize::new(0);
-    nd::Zip::from(traj_data.outer_iter_mut())
+    let completed = AtomicUsize::new(0);
+    nd::Zip::indexed(traj_data.outer_iter_mut())
         .and(prob_data.outer_iter_mut())
-        .par_for_each(|mut traj_rec_r, mut prob_rec_r| {
+        .par_for_each(|run, mut traj_rec_r, mut prob_rec_r| {
             let Trajectory { traj, probs } =
                 sample_trajectory(
                     manifest.nqubits(),
-                    (unis.as_ref(), meas.as_ref())
+                    (unis.as_ref(), meas.as_ref()),
+                    save.then_some(
+                        SaveState {
+                            outdir: &outdir,
+                            seed: manifest.seed(),
+                            nqubits: manifest.nqubits(),
+                            depth: manifest.depth(),
+                            circ,
+                            p,
+                            run,
+                            output_id: &output_id,
+                        }
+                    ),
                 );
 
             assert_eq!(
@@ -198,7 +261,7 @@ fn main() {
                     });
                 });
 
-            let prev_run = run.fetch_add(1, Ordering::SeqCst);
+            let prev_run = completed.fetch_add(1, Ordering::SeqCst);
             eprintln!("  {:w_run$} / {:w_run$} ", prev_run + 1, RUNS);
         });
     eprintln!();
