@@ -161,7 +161,7 @@ fn main() {
         .expect("missing p value")
         .parse::<f64>()
         .expect("invalid p value");
-    let save = args.next().is_some();
+    let save = args.next().is_some_and(|arg| !arg.is_empty());
 
     let manifest =
         MiptManifest::load(&manifest_file)

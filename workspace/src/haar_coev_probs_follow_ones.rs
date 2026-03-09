@@ -146,7 +146,7 @@ fn main() {
         args.next()
         .expect("missing trajectory file");
     let traj_file = PathBuf::from(traj_file);
-    let save = args.next().is_some();
+    let save = args.next().is_some_and(|arg| !arg.is_empty());
 
     let mut data = read_npz!(traj_file);
     let chi: nd::Array1<i32> = data.by_name("chi").unwrap();
