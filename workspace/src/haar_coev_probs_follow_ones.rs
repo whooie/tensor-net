@@ -5,7 +5,7 @@ use std::{
 use itertools::Itertools;
 use ndarray as nd;
 use num_complex::Complex64 as C64;
-use rand::{ Rng, thread_rng };
+use rand::thread_rng;
 use tensor_net::{
     circuit::{ Q, apply_bilayer, UniSeq, MeasSeq, Meas, Outcome, load_cbor },
     mps::{ MPS, BondDim },
@@ -137,14 +137,24 @@ fn main() {
     //     .build_global()
     //     .unwrap();
 
+    let traj_pat =
+        regex::Regex::new(r"^haar_coev_probs.*outid=([0-9a-f]+)\.npz$")
+        .unwrap();
+
     let outdir = PathBuf::from("/scratch/whuie2/haar_coev_probs");
-    let output_id = format!("{:016x}", thread_rng().gen::<u64>());
 
     // parse cli args to open an existing output data file
     let mut args = std::env::args().skip(1);
     let traj_file: String =
         args.next()
         .expect("missing trajectory file");
+    let output_id: String =
+        traj_pat.captures(&traj_file)
+        .expect("encountered non-matching trajectory file name")
+        .get(1)
+        .unwrap()
+        .as_str()
+        .to_string();
     let traj_file = PathBuf::from(traj_file);
     let save = args.next().is_some_and(|arg| !arg.is_empty());
 
