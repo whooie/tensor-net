@@ -11,7 +11,7 @@ use tensor_net::{
     mps::{ MPS, BondDim },
 };
 use whooie::{ read_npz, write_npz };
-use lib::mipt::{ MiptManifest, save_mps };
+use lib::mipt::{ MiptManifest, save_mps_bonds };
 
 type MeasRecord = Vec<Vec<Meas>>; // :: { layer, subindex }
 type ProbRecord = Vec<Vec<(usize, f64)>>; // :: { layer, subindex }
@@ -124,7 +124,7 @@ where P: AsRef<Path>
             .collect();
         probs.push(probs_c);
         if let Some(save) = save_states.as_ref() {
-            save_mps(&state_c, save.target_path(chi))
+            save_mps_bonds(&state_c, save.target_path(chi))
                 .expect("error saving state");
         }
     }

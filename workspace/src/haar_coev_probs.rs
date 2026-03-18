@@ -10,7 +10,7 @@ use tensor_net::{
     mps::{ MPS, BondDim },
 };
 use whooie::write_npz;
-use lib::mipt::{ MiptManifest, save_mps };
+use lib::mipt::{ MiptManifest, save_mps_bonds };
 
 const RUNS: usize = 64;
 const BONDS: &[Option<usize>] =
@@ -98,7 +98,7 @@ where P: AsRef<Path>
         })
         .unzip();
     if let Some(save) = save_states.as_ref() {
-        save_mps(&state_q, save.target_path(0))
+        save_mps_bonds(&state_q, save.target_path(0))
             .expect("error saving state");
     }
 
@@ -123,7 +123,7 @@ where P: AsRef<Path>
             .collect();
         probs.push(probs_c);
         if let Some(save) = save_states.as_ref() {
-            save_mps(&state_c, save.target_path(chi))
+            save_mps_bonds(&state_c, save.target_path(chi))
                 .expect("error saving state");
         }
     }
