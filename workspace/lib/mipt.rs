@@ -177,3 +177,25 @@ where P: AsRef<Path>
     Ok(())
 }
 
+pub fn save_mps_bonds<P>(mps: &MPS<Q, C64>, path: P) -> CircuitResult<()>
+where P: AsRef<Path>
+{
+    let outfile =
+        std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .append(false)
+        .open(path)
+        .map_err(CircuitError::IOError)?;
+    let mut writer = NpzWriter::new(outfile);
+    for (k, lambdak) in mps.svals().iter().enumerate() {
+        let lambdak_vec = lambda_to_ndarray(lambdak);
+        writer.add_array(format!("l{k}"), &lambdak_vec)
+            .expect("npz writer error");
+    }
+    writer.finish()
+        .expect("npz writer error");
+    Ok(())
+}
+
