@@ -138,7 +138,7 @@ fn main() {
     //     .unwrap();
 
     let traj_pat =
-        regex::Regex::new(r"^haar_coev_probs.*outid=([0-9a-f]+)\.npz$")
+        regex::Regex::new(r"haar_coev_probs.*outid=([0-9a-f]+)\.npz$")
         .unwrap();
 
     let outdir = PathBuf::from("/scratch/whuie2/haar_coev_probs");
