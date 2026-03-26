@@ -33,7 +33,7 @@ where P: AsRef<Path>
 {
     fn target_path(&self, chi: usize) -> PathBuf {
         let fname = format!("\
-            haar_coev_state_ones\
+            state/haar_coev_state_ones\
             _seed={}\
             _nqubits={}\
             _depth={}\
@@ -264,8 +264,8 @@ fn main() {
             manifest.seed(),
             manifest.nqubits(),
             manifest.depth(),
-            p,
-            circ,
+            p[0],
+            circ[0],
             output_id,
         );
     write_npz!(
