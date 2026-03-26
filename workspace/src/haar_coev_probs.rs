@@ -47,7 +47,7 @@ where P: AsRef<Path>
 {
     fn target_path(&self, chi: usize) -> PathBuf {
         let fname = format!("\
-            haar_coev_state\
+            state/haar_coev_state\
             _seed={}\
             _nqubits={}\
             _depth={}\
