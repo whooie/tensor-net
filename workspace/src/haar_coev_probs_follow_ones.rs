@@ -185,6 +185,28 @@ fn main() {
         circ[0], p[0], genid_str);
     println!("output ID: {}", output_id);
 
+    let fname =
+        format!("\
+            haar_coev_probs_ones\
+            _seed={}\
+            _nqubits={}\
+            _depth={}\
+            _p={:.6}\
+            _circ={}\
+            _outid={}\
+            .npz",
+            manifest.seed(),
+            manifest.nqubits(),
+            manifest.depth(),
+            p[0],
+            circ[0],
+            output_id,
+        );
+    if outdir.join(&fname).exists() {
+        println!("output file `{}` exists; skip computation", fname);
+        return;
+    }
+
     let runs = traj_data.shape()[0];
     let bonds: Vec<usize> =
         chi.iter()
@@ -251,23 +273,6 @@ fn main() {
         });
     eprintln!();
 
-    let fname =
-        format!("\
-            haar_coev_probs_ones\
-            _seed={}\
-            _nqubits={}\
-            _depth={}\
-            _p={:.6}\
-            _circ={}\
-            _outid={}\
-            .npz",
-            manifest.seed(),
-            manifest.nqubits(),
-            manifest.depth(),
-            p[0],
-            circ[0],
-            output_id,
-        );
     write_npz!(
         outdir.join(fname),
         arrays: {
