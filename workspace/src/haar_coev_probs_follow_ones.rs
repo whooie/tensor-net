@@ -86,6 +86,7 @@ where
         last_layer = layer;
         record.push(meas_layer);
     }
+    while record.len() < depth { record.push(Vec::new()); }
     record
 }
 
