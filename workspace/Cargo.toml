@@ -44,6 +44,14 @@ name = "haar_coev_probs"
 path = "src/haar_coev_probs_follow_ones.rs"
 name = "haar_coev_probs_follow_ones"
 
+[[bin]]
+path = "src/haar_gen_circuits2p.rs"
+name = "haar_gen_circuits2p"
+
+[[bin]]
+path = "src/haar_two_point.rs"
+name = "haar_two_point"
+
 [profile.release]
 lto = true
 panic = "abort"
