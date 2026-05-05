@@ -25,7 +25,7 @@ thiserror = "1.0.58"
 
 [dev-dependencies.whooie]
 git = "https://gitlab.com/whooie/rust-lib.git"
-version = "*"
+version = "0.1.0"
 features = [ "ndarray-utils",]
 
 [lib]
